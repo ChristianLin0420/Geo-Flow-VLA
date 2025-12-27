@@ -66,7 +66,7 @@ data:
   
   # Dataset selection
   dataset: "libero"           # Options: libero, rlbench, calvin
-  libero_suite: "all"         # Options: spatial, object, goal, all
+  libero_suite: "full"         # Options: spatial, object, goal, 10, 90, 100 (long), all, full
   
   # Data loading
   num_workers: 4              # Reduce if getting shm/bus errors
@@ -100,12 +100,12 @@ training:
     
     # Checkpointing
     save_every: 5             # Save checkpoint every N epochs
-    eval_every: 5             # Evaluate every N epochs
+    eval_every: 1             # Evaluate every N epochs
     
   # Phase 2: Policy Training
   phase2:
     epochs: 200
-    batch_size: 32
+    batch_size: 64
     lr_policy: 3.0e-5
     lr_discriminator: 1.0e-4
     weight_decay: 1.0e-5
@@ -123,8 +123,8 @@ training:
     num_inference_steps: 50   # Steps for inference sampling
     
     # Checkpointing
-    save_every: 10
-    eval_every: 5
+    save_every: 5
+    eval_every: 1
 
 # ============================================================================
 # Augmentation
@@ -147,7 +147,7 @@ logging:
   # Weights & Biases
   wandb:
     enabled: true
-    project: "geo-flow-vla"
+    project: "geo-flow-vla-test"
     entity: null              # Set your W&B entity/team
     name: null                # Run name (auto-generated if null)
     tags: []

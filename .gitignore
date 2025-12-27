@@ -208,8 +208,18 @@ __marimo__/
 
 # Data
 data/libero
+data/calvin
+data/rlbench
 
 # Training outputs
 outputs/
 checkpoints/
 wandb/
+
+# Slurm scripts
+interactive.sh
+sbatch.sh
+sbatch_evaluation.sh
+auto.sh
+slurm*.err
+slurm*.out

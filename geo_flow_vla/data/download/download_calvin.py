@@ -1,242 +1,185 @@
 """
 CALVIN Dataset Download Script.
 
-Downloads the CALVIN benchmark dataset from official sources.
+Downloads the CALVIN benchmark dataset from HuggingFace Hub (LeRobot format).
+
+Source: https://huggingface.co/fywang
 
 Usage:
     python -m geo_flow_vla.data.download.download_calvin --env D --output ./data/calvin
-
-Reference:
-    CALVIN Website: http://calvin.cs.uni-freiburg.de/
-    GitHub: https://github.com/mees/calvin
 """
 
 import argparse
 import os
-import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# CALVIN dataset URLs
-CALVIN_URLS = {
+# CALVIN datasets on HuggingFace Hub (LeRobot format)
+# Source: https://huggingface.co/fywang
+CALVIN_HF_DATASETS = {
+    "debug": {
+        "repo_id": "fywang/calvin-debug-lerobot",
+        "size_gb": 0.1,
+        "description": "Debug dataset for testing",
+    },
     "D": {
-        "training": "http://calvin.cs.uni-freiburg.de/dataset/task_D_D/training.zip",
-        "validation": "http://calvin.cs.uni-freiburg.de/dataset/task_D_D/validation.zip",
+        "repo_id": "fywang/calvin-task-D-D-lerobot",
         "size_gb": 35.0,
+        "description": "Task D environment (369k samples)",
     },
     "ABC": {
-        "training": "http://calvin.cs.uni-freiburg.de/dataset/task_ABC_D/training.zip",
-        "validation": "http://calvin.cs.uni-freiburg.de/dataset/task_ABC_D/validation.zip",
+        "repo_id": "fywang/calvin-task-ABC-D-lerobot",
         "size_gb": 105.0,
+        "description": "Tasks A, B, C environments (1.14M samples)",
     },
     "ABCD": {
-        "training": "http://calvin.cs.uni-freiburg.de/dataset/task_ABCD_D/training.zip",
-        "validation": "http://calvin.cs.uni-freiburg.de/dataset/task_ABCD_D/validation.zip",
+        "repo_id": "fywang/calvin-task-ABCD-D-lerobot",
         "size_gb": 140.0,
-    },
-    "debug": {
-        "training": "http://calvin.cs.uni-freiburg.de/dataset/calvin_debug_dataset/training.zip",
-        "validation": "http://calvin.cs.uni-freiburg.de/dataset/calvin_debug_dataset/validation.zip",
-        "size_gb": 0.5,
+        "description": "All environments (1.42M samples)",
     },
 }
 
 
-def download_with_wget(url: str, dest_path: Path) -> None:
-    """Download file using wget."""
-    cmd = ["wget", "-c", "-O", str(dest_path), url]
-    subprocess.run(cmd, check=True)
-
-
-def download_with_requests(url: str, dest_path: Path, chunk_size: int = 8192) -> None:
-    """Download file using requests with progress bar."""
-    import requests
-    from tqdm import tqdm
-    
-    response = requests.get(url, stream=True)
-    response.raise_for_status()
-    
-    total_size = int(response.headers.get('content-length', 0))
-    
-    with open(dest_path, 'wb') as f:
-        with tqdm(total=total_size, unit='B', unit_scale=True, desc=dest_path.name) as pbar:
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    f.write(chunk)
-                    pbar.update(len(chunk))
-
-
-def extract_zip(zip_path: Path, extract_to: Path) -> None:
-    """Extract a zip file."""
-    import zipfile
-    
-    logger.info(f"Extracting {zip_path}...")
-    
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(extract_to)
-
-
-def download_calvin(
+def download_calvin_hf(
     output_dir: str = "./data/calvin",
     env: str = "D",
-    splits: Optional[List[str]] = None,
     force: bool = False,
-    keep_zip: bool = False,
-    use_wget: bool = True,
 ) -> None:
     """
-    Download CALVIN dataset.
+    Download CALVIN dataset from HuggingFace Hub.
     
     Args:
         output_dir: Output directory
         env: Environment configuration ("D", "ABC", "ABCD", "debug")
-        splits: Data splits to download (["training", "validation"] by default)
         force: Force re-download
-        keep_zip: Keep zip files after extraction
-        use_wget: Use wget for downloading (more reliable for large files)
     """
-    if env not in CALVIN_URLS:
-        raise ValueError(f"Unknown environment '{env}'. Available: {list(CALVIN_URLS.keys())}")
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        logger.info("Installing huggingface_hub...")
+        import subprocess
+        subprocess.run([sys.executable, "-m", "pip", "install", "huggingface_hub"], check=True)
+        from huggingface_hub import snapshot_download
     
-    if splits is None:
-        splits = ["training", "validation"]
+    if env not in CALVIN_HF_DATASETS:
+        raise ValueError(f"Unknown environment '{env}'. Available: {list(CALVIN_HF_DATASETS.keys())}")
     
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
-    env_info = CALVIN_URLS[env]
+    env_info = CALVIN_HF_DATASETS[env]
+    repo_id = env_info["repo_id"]
     
-    logger.info(f"Downloading CALVIN {env} (~{env_info['size_gb']} GB)")
-    logger.info(f"Splits: {splits}")
+    logger.info(f"Downloading CALVIN {env} from HuggingFace Hub")
+    logger.info(f"Repository: {repo_id}")
+    logger.info(f"Size: ~{env_info['size_gb']} GB")
+    logger.info(f"Description: {env_info['description']}")
     logger.info(f"Output: {output_path}")
     
-    for split in splits:
-        if split not in env_info:
-            logger.warning(f"Split '{split}' not available for {env}")
-            continue
-        
-        url = env_info[split]
-        split_path = output_path / f"task_{env}_{env}" / split
-        
-        # Check if already exists
-        if split_path.exists() and not force:
-            logger.info(f"{split} already exists, skipping (use --force to re-download)")
-            continue
-        
-        zip_path = output_path / f"{env}_{split}.zip"
-        
-        logger.info(f"Downloading {split}...")
-        
-        try:
-            if use_wget:
-                download_with_wget(url, zip_path)
-            else:
-                download_with_requests(url, zip_path)
-            
-            # Extract
-            extract_zip(zip_path, output_path)
-            
-            if not keep_zip:
-                zip_path.unlink()
-                logger.info(f"Removed {zip_path}")
-            
-            logger.info(f"Successfully downloaded {split}")
-            
-        except Exception as e:
-            logger.error(f"Failed to download {split}: {e}")
-            logger.info(f"Please manually download from: {url}")
+    # Target directory for this environment
+    local_dir = output_path / f"calvin_{env.lower()}_lerobot"
     
-    logger.info("CALVIN download complete!")
+    if local_dir.exists() and not force:
+        logger.info(f"Data already exists at {local_dir}")
+        logger.info("Use --force to re-download")
+        verify_calvin_hf(output_dir, env)
+        return
     
-    # Verify download
-    verify_calvin(output_dir, env)
+    try:
+        # Download from HuggingFace Hub
+        logger.info("Starting download...")
+        snapshot_download(
+            repo_id=repo_id,
+            repo_type="dataset",
+            local_dir=str(local_dir),
+            local_dir_use_symlinks=False,
+            resume_download=True,
+        )
+        
+        logger.info("CALVIN download complete!")
+        verify_calvin_hf(output_dir, env)
+        
+    except Exception as e:
+        logger.error(f"Download failed: {e}")
+        logger.info(f"You can manually download from: https://huggingface.co/datasets/{repo_id}")
+        raise
 
 
-def verify_calvin(data_dir: str, env: str = "D") -> bool:
-    """
-    Verify CALVIN dataset.
-    
-    Args:
-        data_dir: Path to CALVIN data
-        env: Environment to verify
-        
-    Returns:
-        True if verification passes
-    """
+def verify_calvin_hf(data_dir: str, env: str = "D") -> bool:
+    """Verify CALVIN HuggingFace dataset."""
     data_path = Path(data_dir)
     
-    expected_dirs = {
-        "D": ["task_D_D"],
-        "ABC": ["task_ABC_D"],
-        "ABCD": ["task_ABCD_D"],
-        "debug": ["calvin_debug_dataset"],
-    }
+    local_dir = data_path / f"calvin_{env.lower()}_lerobot"
     
-    all_valid = True
+    if not local_dir.exists():
+        logger.warning(f"Missing directory: {local_dir}")
+        return False
     
-    for dir_name in expected_dirs.get(env, []):
-        dir_path = data_path / dir_name
-        
-        if not dir_path.exists():
-            logger.warning(f"Missing directory: {dir_path}")
-            all_valid = False
-            continue
-        
-        # Check for training and validation
-        for split in ["training", "validation"]:
-            split_path = dir_path / split
-            
-            if not split_path.exists():
-                logger.warning(f"Missing split: {split_path}")
-                all_valid = False
-                continue
-            
-            # Check for key files
-            npz_files = list(split_path.glob("*.npz"))
-            
-            if len(npz_files) > 0:
-                logger.info(f"{split}: {len(npz_files)} episodes")
-            else:
-                logger.warning(f"{split}: No NPZ files found")
-                all_valid = False
-        
-        # Check for language annotations
-        lang_path = dir_path / "training" / "lang_annotations"
-        if lang_path.exists():
-            logger.info("Language annotations: OK")
-        else:
-            logger.warning("Language annotations not found")
+    # Check for LeRobot dataset files
+    parquet_files = list(local_dir.glob("**/*.parquet"))
+    arrow_files = list(local_dir.glob("**/*.arrow"))
     
-    return all_valid
+    if parquet_files:
+        logger.info(f"✓ Found {len(parquet_files)} parquet files")
+    elif arrow_files:
+        logger.info(f"✓ Found {len(arrow_files)} arrow files")
+    else:
+        logger.warning("✗ No data files found")
+        return False
+    
+    # Check for metadata
+    meta_files = list(local_dir.glob("**/meta*.json")) + list(local_dir.glob("**/*config*.json"))
+    if meta_files:
+        logger.info(f"✓ Found metadata files: {[f.name for f in meta_files[:3]]}")
+    
+    return True
+
+
+def load_calvin_lerobot(data_dir: str, env: str = "D"):
+    """
+    Load CALVIN dataset using LeRobot format.
+    
+    Example usage:
+        dataset = load_calvin_lerobot("./data/calvin", "D")
+        for sample in dataset:
+            image = sample["observation.image"]
+            action = sample["action"]
+    """
+    try:
+        from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+    except ImportError:
+        logger.error("LeRobot not installed. Install with: pip install lerobot")
+        return None
+    
+    repo_id = CALVIN_HF_DATASETS[env]["repo_id"]
+    
+    # Load directly from HuggingFace Hub
+    dataset = LeRobotDataset(repo_id)
+    
+    logger.info(f"Loaded CALVIN {env} dataset with {len(dataset)} samples")
+    return dataset
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Download CALVIN dataset")
+    parser = argparse.ArgumentParser(description="Download CALVIN dataset from HuggingFace Hub")
     parser.add_argument(
         "--env",
         type=str,
         default="D",
-        choices=list(CALVIN_URLS.keys()),
-        help="Environment configuration",
+        choices=list(CALVIN_HF_DATASETS.keys()),
+        help="Environment configuration (debug, D, ABC, ABCD)",
     )
     parser.add_argument(
         "--output",
         type=str,
         default="./data/calvin",
         help="Output directory",
-    )
-    parser.add_argument(
-        "--splits",
-        type=str,
-        nargs="+",
-        default=["training", "validation"],
-        help="Splits to download",
     )
     parser.add_argument(
         "--force",
@@ -249,32 +192,35 @@ def main():
         help="Verify existing download",
     )
     parser.add_argument(
-        "--keep-zip",
+        "--list",
         action="store_true",
-        help="Keep zip files",
-    )
-    parser.add_argument(
-        "--no-wget",
-        action="store_true",
-        help="Use requests instead of wget",
+        dest="list_datasets",
+        help="List available datasets",
     )
     
     args = parser.parse_args()
     
+    if args.list_datasets:
+        print("\nAvailable CALVIN datasets on HuggingFace Hub:")
+        print("=" * 60)
+        for env, info in CALVIN_HF_DATASETS.items():
+            print(f"\n{env}:")
+            print(f"  Repository: {info['repo_id']}")
+            print(f"  Size: ~{info['size_gb']} GB")
+            print(f"  Description: {info['description']}")
+        print("\n" + "=" * 60)
+        return
+    
     if args.verify:
-        success = verify_calvin(args.output, args.env)
+        success = verify_calvin_hf(args.output, args.env)
         sys.exit(0 if success else 1)
     else:
-        download_calvin(
+        download_calvin_hf(
             output_dir=args.output,
             env=args.env,
-            splits=args.splits,
             force=args.force,
-            keep_zip=args.keep_zip,
-            use_wget=not args.no_wget,
         )
 
 
 if __name__ == "__main__":
     main()
-

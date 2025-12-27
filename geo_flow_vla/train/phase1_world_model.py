@@ -448,7 +448,8 @@ class WorldModelTrainer:
             from sklearn.manifold import TSNE
             import matplotlib.pyplot as plt
             
-            embeddings_np = embeddings.numpy()
+            # Ensure embeddings are on CPU and detached
+            embeddings_np = embeddings.detach().cpu().numpy()
             
             tsne = TSNE(n_components=2, random_state=42, perplexity=30)
             z_2d = tsne.fit_transform(embeddings_np)
@@ -467,8 +468,12 @@ class WorldModelTrainer:
                 "phase1/z_histogram": wandb.Histogram(embeddings_np.flatten())
             }, step=self.global_step)
             
+            logger.info(f"Logged t-SNE and histogram for {len(embeddings_np)} embeddings")
+            
         except ImportError:
             logger.warning("sklearn not available for t-SNE visualization")
+        except Exception as e:
+            logger.warning(f"Failed to generate t-SNE/histogram: {e}")
 
     def _log_3d_point_cloud(self, rgb: torch.Tensor) -> None:
         """Generate and log 3D point cloud visualization from MoGe-2."""
@@ -565,13 +570,14 @@ class WorldModelTrainer:
     def save_checkpoint(self, is_best: bool = False) -> None:
         """Save model checkpoint."""
         checkpoint = {
-            "epoch": self.epoch,
+            "epoch": self.epoch + 1,
             "global_step": self.global_step,
             "world_model_state_dict": self.world_model_module.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict(),
             "best_loss": self.best_loss,
             "config": OmegaConf.to_container(self.cfg),
+            "wandb_run_id": wandb.run.id if wandb.run else None,
         }
         
         # Save latest
@@ -680,6 +686,16 @@ def train_world_model(cfg: DictConfig) -> None:
     
     # Initialize wandb (only on main process)
     if is_main_process():
+        # Check if resuming from checkpoint to get wandb run_id
+        wandb_run_id = None
+        wandb_resume = None
+        if cfg.checkpoint.resume:
+            resume_ckpt = torch.load(cfg.checkpoint.resume, map_location="cpu")
+            wandb_run_id = resume_ckpt.get("wandb_run_id")
+            if wandb_run_id:
+                wandb_resume = "must"
+                logger.info(f"Resuming wandb run: {wandb_run_id}")
+        
         wandb.init(
             project=cfg.logging.wandb.project,
             entity=cfg.logging.wandb.entity,
@@ -688,6 +704,8 @@ def train_world_model(cfg: DictConfig) -> None:
             tags=["phase1", cfg.data.libero_suite, f"gpus_{world_size}"],
             group=cfg.logging.wandb.group or f"exp_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             save_code=cfg.logging.wandb.save_code,
+            id=wandb_run_id,
+            resume=wandb_resume,
         )
     
     try:

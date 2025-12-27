@@ -194,6 +194,20 @@ class PolicyTrainer:
         logger.info(f"Policy parameters: {sum(p.numel() for p in self.policy.parameters()):,}")
         logger.info(f"Discriminator parameters: {sum(p.numel() for p in self.discriminator.parameters()):,}")
 
+    @property
+    def policy_module(self):
+        """Get the underlying policy module (unwrapped from DDP if needed)."""
+        if self.is_distributed:
+            return self.policy.module
+        return self.policy
+
+    @property
+    def discriminator_module(self):
+        """Get the underlying discriminator module (unwrapped from DDP if needed)."""
+        if self.is_distributed:
+            return self.discriminator.module
+        return self.discriminator
+
     def _build_optimizers(self) -> None:
         """Initialize optimizers and schedulers."""
         cfg = self.cfg.training.phase2
@@ -560,7 +574,7 @@ class PolicyTrainer:
             val_metrics["cfm_loss"] += cfm_result["loss"].item()
             
             # Generate predictions for MSE
-            pred_actions = self.policy.sample(
+            pred_actions = self.policy_module.sample(
                 current_state, goal,
                 num_steps=self.cfg.training.phase2.num_inference_steps,
             )
@@ -662,14 +676,15 @@ class PolicyTrainer:
         checkpoint = {
             "epoch": self.epoch,
             "global_step": self.global_step,
-            "policy_state_dict": self.policy.state_dict(),
-            "discriminator_state_dict": self.discriminator.state_dict(),
+            "policy_state_dict": self.policy_module.state_dict(),
+            "discriminator_state_dict": self.discriminator_module.state_dict(),
             "policy_optimizer_state_dict": self.policy_optimizer.state_dict(),
             "disc_optimizer_state_dict": self.disc_optimizer.state_dict(),
             "policy_scheduler_state_dict": self.policy_scheduler.state_dict(),
             "cpr_step": self.cpr.step.item(),
             "best_loss": self.best_loss,
             "config": OmegaConf.to_container(self.cfg),
+            "wandb_run_id": wandb.run.id if wandb.run else None,
         }
         
         torch.save(checkpoint, self.ckpt_dir / "latest.pt")
@@ -679,14 +694,14 @@ class PolicyTrainer:
         
         if is_best:
             torch.save(checkpoint, self.ckpt_dir / "best.pt")
-            torch.save(self.policy.state_dict(), self.ckpt_dir / "policy.pth")
+            torch.save(self.policy_module.state_dict(), self.ckpt_dir / "policy.pth")
 
     def load_checkpoint(self, path: str) -> None:
         """Load checkpoint."""
         checkpoint = torch.load(path, map_location=self.device)
         
-        self.policy.load_state_dict(checkpoint["policy_state_dict"])
-        self.discriminator.load_state_dict(checkpoint["discriminator_state_dict"])
+        self.policy_module.load_state_dict(checkpoint["policy_state_dict"])
+        self.discriminator_module.load_state_dict(checkpoint["discriminator_state_dict"])
         self.policy_optimizer.load_state_dict(checkpoint["policy_optimizer_state_dict"])
         self.disc_optimizer.load_state_dict(checkpoint["disc_optimizer_state_dict"])
         self.policy_scheduler.load_state_dict(checkpoint["policy_scheduler_state_dict"])
@@ -772,7 +787,7 @@ class PolicyTrainer:
         goal = self.get_goal_embedding(future_state)
         
         # Generate trajectories
-        pred_actions = self.policy.sample(
+        pred_actions = self.policy_module.sample(
             current_state, goal,
             num_steps=self.cfg.training.phase2.num_inference_steps,
         )
@@ -812,6 +827,17 @@ def train_policy(cfg: DictConfig) -> None:
     
     # Initialize wandb (only on main process)
     if is_main_process():
+
+        # Check if resuming from checkpoint to get wandb run_id
+        wandb_run_id = None
+        wandb_resume = None
+        if cfg.checkpoint.resume:
+            resume_ckpt = torch.load(cfg.checkpoint.resume, map_location="cpu")
+            wandb_run_id = resume_ckpt.get("wandb_run_id")
+            if wandb_run_id:
+                wandb_resume = "must"
+                logger.info(f"Resuming wandb run: {wandb_run_id}")
+
         wandb.init(
             project=cfg.logging.wandb.project,
             entity=cfg.logging.wandb.entity,
@@ -820,6 +846,8 @@ def train_policy(cfg: DictConfig) -> None:
             tags=["phase2", cfg.data.libero_suite, f"gpus_{world_size}"],
             group=cfg.logging.wandb.group or f"exp_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             save_code=cfg.logging.wandb.save_code,
+            id=wandb_run_id,
+            resume=wandb_resume,
         )
     
     try:

@@ -13,9 +13,9 @@ A research implementation targeting NeurIPS 2026, featuring a novel approach to 
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                           Geo-Flow VLA                                   │
+│                           Geo-Flow VLA                                  │
 ├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
+│                                                                         │
 │  ┌──────────────┐     ┌──────────────┐                                  │
 │  │   RGB Image  │────▶│  DINOv2-G/14 │────▶ Semantic Tokens (1536-dim)  │
 │  │              │     │   (Frozen)   │                 │                │
@@ -24,7 +24,7 @@ A research implementation targeting NeurIPS 2026, featuring a novel approach to 
 │         │                                    │  Cross-Attention │       │
 │         ▼                                    │     Fusion       │       │
 │  ┌──────────────┐     ┌──────────────┐       └────────┬─────────┘       │
-│  │   RGB Image  │────▶│    MoGe-2    │────▶ Geometric│Features         │
+│  │   RGB Image  │────▶│    MoGe-2    │────▶ Geometric│Features          │
 │  │              │     │   (Frozen)   │       (256-dim)│                 │
 │  └──────────────┘     └──────────────┘                ▼                 │
 │                                              ┌──────────────────┐       │
@@ -42,13 +42,13 @@ A research implementation targeting NeurIPS 2026, featuring a novel approach to 
 │                                                       │                 │
 │                                                       ▼                 │
 │  ┌────────────────────────────────────────────────────────────────┐     │
-│  │                    DiT Policy (Flow Matching)                   │     │
+│  │                    DiT Policy (Flow Matching)                  │     │
 │  │  ┌─────────────┐   ┌─────────────────────┐   ┌──────────────┐  │     │
-│  │  │ Noisy Action│──▶│ DiT Blocks (x12)   │──▶│ Velocity v_t │  │     │
+│  │  │ Noisy Action│──▶│ DiT Blocks (x12)    │──▶│ Velocity v_t │  │     │
 │  │  │     x_t     │   │ AdaLN Conditioning  │   │              │  │     │
 │  │  └─────────────┘   └─────────────────────┘   └──────────────┘  │     │
 │  └────────────────────────────────────────────────────────────────┘     │
-│                                                                          │
+│                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 

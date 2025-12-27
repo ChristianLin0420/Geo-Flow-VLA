@@ -9,7 +9,7 @@ Provides scripts for downloading:
 
 from .download_libero import download_libero, SUITE_MAPPING
 from .download_rlbench import download_rlbench
-from .download_calvin import download_calvin
+from .download_calvin import download_calvin_hf as download_calvin
 
 __all__ = [
     "download_libero",
