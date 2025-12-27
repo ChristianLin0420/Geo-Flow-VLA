@@ -147,7 +147,7 @@ logging:
   # Weights & Biases
   wandb:
     enabled: true
-    project: "geo-flow-vla-test"
+    project: "geo-flow-vla"
     entity: null              # Set your W&B entity/team
     name: null                # Run name (auto-generated if null)
     tags: []
