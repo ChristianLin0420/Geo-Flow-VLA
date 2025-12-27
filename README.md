@@ -54,6 +54,29 @@ A research implementation targeting NeurIPS 2026, featuring a novel approach to 
 
 ## Installation
 
+### Option 1: Docker (Recommended for SLURM/GPU Clusters)
+
+```bash
+# Pull the pre-built Docker image
+docker pull christianlin0420/geo-flow-vla:latest
+
+# Run interactive container with GPU support
+docker run -it --gpus all \
+    -v /path/to/data:/workspace/Geo-Flow-VLA/data \
+    -v /path/to/checkpoints:/workspace/Geo-Flow-VLA/checkpoints \
+    christianlin0420/geo-flow-vla:latest
+
+# Run training directly
+docker run --gpus all \
+    -v /path/to/data:/workspace/Geo-Flow-VLA/data \
+    -v /path/to/checkpoints:/workspace/Geo-Flow-VLA/checkpoints \
+    -e WANDB_API_KEY=$WANDB_API_KEY \
+    christianlin0420/geo-flow-vla:latest \
+    ./scripts/train.sh phase1 --gpus all --epochs 100
+```
+
+### Option 2: Local Installation
+
 ```bash
 # Clone repository
 git clone https://github.com/your-org/Geo-Flow-VLA.git
@@ -64,7 +87,10 @@ python -m venv venv
 source venv/bin/activate  # Linux/Mac
 # or: venv\Scripts\activate  # Windows
 
-# Install dependencies
+# Install package
+pip install -e .
+
+# Or install dependencies directly
 pip install -r requirements.txt
 
 # Install MoGe-2 (optional, for full 3D lifting)
@@ -72,6 +98,16 @@ pip install git+https://github.com/microsoft/MoGe.git
 
 # Install LIBERO benchmark (optional, for training data)
 pip install git+https://github.com/Lifelong-Robot-Learning/LIBERO.git
+```
+
+### Build Docker Image Locally
+
+```bash
+# Build the image
+docker build -t geo-flow-vla:latest .
+
+# Or with BuildKit for faster builds
+DOCKER_BUILDKIT=1 docker build -t geo-flow-vla:latest .
 ```
 
 ## Project Structure
@@ -174,9 +210,13 @@ The training scripts support distributed data parallel (DDP) training:
 ./scripts/train.sh phase2 --gpus 2,3,4,5    # Train on GPUs 2-5
 ./scripts/train.sh phase1 --gpus all        # Use all available GPUs
 
-# Available GPUs on this server:
-#   0,1: NVIDIA RTX 6000 Ada (49GB each)
-#   2,3,4,5: NVIDIA RTX PRO 6000 Blackwell (97GB each)
+# Additional options
+./scripts/train.sh phase1 --gpus 0,1,2,3 \
+    --batch-size 64 \
+    --epochs 100 \
+    --workers 4 \
+    --name "my_experiment" \
+    --project "geo-flow-vla"
 ```
 
 ### 4. Evaluation

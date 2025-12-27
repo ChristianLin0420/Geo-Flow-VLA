@@ -1,0 +1,105 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "geo-flow-vla"
+version = "0.1.0"
+description = "Geo-Flow VLA: 3D-Aware Robotic Foundation Policy with Conditional Flow Matching"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Geo-Flow VLA Team"}
+]
+keywords = [
+    "robotics",
+    "deep-learning",
+    "3d-vision",
+    "flow-matching",
+    "diffusion-policy",
+    "manipulation",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "torch>=2.1.0",
+    "torchvision>=0.16.0",
+    "numpy>=1.24.0",
+    "einops>=0.7.0",
+    "hydra-core>=1.3.0",
+    "omegaconf>=2.3.0",
+    "wandb>=0.16.0",
+    "timm>=0.9.0",
+    "h5py>=3.9.0",
+    "pillow>=10.0.0",
+    "opencv-python>=4.8.0",
+    "scipy>=1.11.0",
+    "matplotlib>=3.7.0",
+    "seaborn>=0.12.0",
+    "scikit-learn>=1.3.0",
+    "tqdm>=4.66.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "mypy>=1.5.0",
+]
+download = [
+    "gdown>=4.7.0",
+    "huggingface_hub>=0.23.0",
+]
+all = [
+    "geo-flow-vla[dev,download]",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-org/Geo-Flow-VLA"
+Documentation = "https://github.com/your-org/Geo-Flow-VLA#readme"
+Repository = "https://github.com/your-org/Geo-Flow-VLA"
+
+[project.scripts]
+geo-flow-train = "geo_flow_vla.train.phase1_world_model:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["geo_flow_vla*"]
+
+[tool.setuptools.package-data]
+geo_flow_vla = ["configs/*.yaml"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["geo_flow_vla"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
+

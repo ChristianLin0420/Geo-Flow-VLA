@@ -1,0 +1,88 @@
+# Geo-Flow VLA Docker Ignore
+# Excludes files from Docker build context for faster builds
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Data directories (mount these instead)
+data/
+!data/.gitkeep
+
+# Checkpoints (mount these instead)
+checkpoints/
+!checkpoints/.gitkeep
+
+# WandB logs
+wandb/
+
+# Hydra outputs
+outputs/
+
+# Logs
+logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Documentation
+docs/_build/
+
+# Misc
+*.bak
+*.tmp
+.cache/
+

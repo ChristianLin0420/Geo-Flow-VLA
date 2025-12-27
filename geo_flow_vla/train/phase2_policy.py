@@ -623,40 +623,35 @@ class PolicyTrainer:
                 H, W = point_map.shape[-2:]
                 points = point_map[0].permute(1, 2, 0).reshape(-1, 3).cpu().numpy()
                 
-                # Get RGB colors - denormalize if ImageNet normalized
+                # Get RGB colors - images are already in [0, 1] from dataset
                 rgb_np = rgb_frame.permute(1, 2, 0).cpu().numpy()  # (H, W, 3)
-                
-                # Check if normalized (values near 0 or negative)
-                if rgb_np.min() < 0 or rgb_np.max() < 1.5:
-                    # Denormalize from ImageNet normalization
-                    mean = np.array([0.485, 0.456, 0.406])
-                    std = np.array([0.229, 0.224, 0.225])
-                    rgb_np = rgb_np * std + mean
-                
-                # Ensure [0, 1] range
                 rgb_np = np.clip(rgb_np, 0, 1)
                 
-                # Keep colors as float32 [0, 1] to match points dtype
-                rgb_colors = rgb_np.reshape(-1, 3).astype(np.float32)
+                # WandB Object3D expects colors as [0, 255]
+                rgb_colors = (rgb_np * 255).reshape(-1, 3)  # (H*W, 3)
                 
                 # Downsample point cloud
-                stride = 2
-                points_ds = points[::stride].astype(np.float32)
+                stride = 1
+                points_ds = points[::stride].astype(np.float64)
                 colors_ds = rgb_colors[::stride]
                 
                 # Get predicted trajectory positions (first 3 dims are xyz)
-                traj_points = pred_actions[0, :, :3].cpu().numpy().astype(np.float32)  # (H, 3)
-                # Red trajectory points as float [0, 1]
-                traj_colors = np.full((len(traj_points), 3), [1.0, 0.0, 0.0], dtype=np.float32)
+                traj_points = pred_actions[0, :, :3].cpu().numpy().astype(np.float64)
+                # Red trajectory points [255, 0, 0]
+                traj_colors = np.full((len(traj_points), 3), [255.0, 0.0, 0.0])
                 
                 # Combine scene and trajectory
                 all_points = np.vstack([points_ds, traj_points])
                 all_colors = np.vstack([colors_ds, traj_colors])
                 
-                points_with_color = np.concatenate([all_points, all_colors], axis=-1).astype(np.float32)
+                # Create combined array
+                N = len(all_points)
+                point_cloud = np.zeros((N, 6), dtype=np.float64)
+                point_cloud[:, :3] = all_points
+                point_cloud[:, 3:] = all_colors
                 
                 wandb.log({
-                    "phase2/3d_scene_with_trajectory": wandb.Object3D(points_with_color)
+                    "phase2/3d_scene_with_trajectory": wandb.Object3D(point_cloud)
                 }, step=self.global_step)
                 
         except Exception as e:

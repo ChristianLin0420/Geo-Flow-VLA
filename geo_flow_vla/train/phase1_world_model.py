@@ -488,36 +488,37 @@ class WorldModelTrainer:
                 H, W = point_map.shape[-2:]
                 points = point_map[0].permute(1, 2, 0).reshape(-1, 3).cpu().numpy()  # (H*W, 3)
                 
-                # Get RGB colors - denormalize if ImageNet normalized
+                # Get RGB colors - images are already in [0, 1] from dataset
                 rgb_np = rgb_frame.permute(1, 2, 0).cpu().numpy()  # (H, W, 3)
                 
-                # Check if normalized (values near 0 or negative)
-                if rgb_np.min() < 0 or rgb_np.max() < 1.5:
-                    # Denormalize from ImageNet normalization
-                    mean = np.array([0.485, 0.456, 0.406])
-                    std = np.array([0.229, 0.224, 0.225])
-                    rgb_np = rgb_np * std + mean
+                # Debug: log color stats
+                logger.info(f"RGB stats: min={rgb_np.min():.3f}, max={rgb_np.max():.3f}, mean={rgb_np.mean():.3f}")
                 
-                # Ensure [0, 1] range
+                # Ensure [0, 1] range (should already be, but clip for safety)
                 rgb_np = np.clip(rgb_np, 0, 1)
                 
-                # Keep colors as float32 [0, 1] to match points dtype
-                rgb_colors = rgb_np.reshape(-1, 3).astype(np.float32)  # (H*W, 3)
+                # WandB Object3D expects colors as uint8 [0, 255]
+                rgb_colors = (rgb_np * 255).astype(np.uint8).reshape(-1, 3)  # (H*W, 3)
                 
-                # Downsample for performance (keep every 4th point)
-                stride = 2
-                points_ds = points[::stride].astype(np.float32)
+                # Downsample for performance
+                stride = 1
+                points_ds = points[::stride].astype(np.float64)  # WandB prefers float64 for coords
                 colors_ds = rgb_colors[::stride]
                 
-                # Combine points and colors: (N, 6) = XYZ + RGB (both float32, colors in [0,1])
-                points_with_color = np.concatenate([points_ds, colors_ds], axis=-1).astype(np.float32)
+                # Combine: WandB Object3D expects (N, 6) with XYZ as float and RGB as [0,255] uint8
+                # But numpy concat requires same dtype, so we need to use structured approach
+                # Create the array in the format WandB expects
+                N = len(points_ds)
+                point_cloud = np.zeros((N, 6), dtype=np.float64)
+                point_cloud[:, :3] = points_ds  # XYZ
+                point_cloud[:, 3:] = colors_ds.astype(np.float64)  # RGB as float [0, 255]
                 
                 # Log to WandB
                 wandb.log({
-                    "phase1/3d_point_cloud": wandb.Object3D(points_with_color)
+                    "phase1/3d_point_cloud": wandb.Object3D(point_cloud)
                 }, step=self.global_step)
                 
-                logger.info(f"Logged 3D point cloud with {len(points_ds)} points")
+                logger.info(f"Logged 3D point cloud with {N} points, colors [0-255]")
                 
         except Exception as e:
             logger.warning(f"Failed to log 3D point cloud: {e}")

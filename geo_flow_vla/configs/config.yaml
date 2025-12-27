@@ -99,7 +99,7 @@ training:
     backward_weight: 0.5      # β in the plan
     
     # Checkpointing
-    save_every: 10            # Save checkpoint every N epochs
+    save_every: 5             # Save checkpoint every N epochs
     eval_every: 5             # Evaluate every N epochs
     
   # Phase 2: Policy Training
