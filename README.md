@@ -166,7 +166,43 @@ Available suites:
 - `all` - spatial + object + goal (30 tasks)
 - `full` - Everything (130 tasks)
 
-### 2. Phase 1: Train World Model
+### 2. Download CALVIN Dataset
+
+```bash
+# List available CALVIN datasets
+python -m geo_flow_vla.data.download.download_calvin --list
+
+# Download debug dataset for testing (~0.1 GB)
+python -m geo_flow_vla.data.download.download_calvin --env debug --output ./data/calvin
+
+# Download Task D environment (~35 GB, 369k samples)
+python -m geo_flow_vla.data.download.download_calvin --env D --output ./data/calvin
+
+# Download Tasks A, B, C environments (~105 GB, 1.14M samples)
+python -m geo_flow_vla.data.download.download_calvin --env ABC --output ./data/calvin
+
+# Download all environments ABCD (~140 GB, 1.42M samples)
+python -m geo_flow_vla.data.download.download_calvin --env ABCD --output ./data/calvin
+
+# Force re-download (resume interrupted downloads)
+python -m geo_flow_vla.data.download.download_calvin --env D --output ./data/calvin --force
+
+# Verify existing download
+python -m geo_flow_vla.data.download.download_calvin --env D --output ./data/calvin --verify
+```
+
+Available environments:
+- `debug` - Debug dataset for testing (~0.1 GB)
+- `D` - Task D environment (369k samples, ~35 GB)
+- `ABC` - Tasks A, B, C environments (1.14M samples, ~105 GB)
+- `ABCD` - All environments (1.42M samples, ~140 GB)
+
+**Note:** CALVIN uses LeRobot parquet format. To train with CALVIN, use the `calvin_config.yaml`:
+```bash
+./scripts/train.sh phase1 --config calvin_config --gpus all
+```
+
+### 3. Phase 1: Train World Model
 
 ```bash
 # Single GPU training
@@ -188,7 +224,7 @@ WANDB_MODE=disabled python -m geo_flow_vla.train.phase1_world_model \
     data.libero_suite=spatial
 ```
 
-### 3. Phase 2: Train Policy
+### 4. Phase 2: Train Policy
 
 ```bash
 # Single GPU
@@ -219,7 +255,7 @@ The training scripts support distributed data parallel (DDP) training:
     --project "geo-flow-vla"
 ```
 
-### 4. Evaluation
+### 5. Evaluation
 
 ```bash
 # Evaluate on LIBERO benchmark

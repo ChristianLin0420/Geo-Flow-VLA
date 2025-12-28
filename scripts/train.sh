@@ -7,6 +7,7 @@
 #   ./scripts/train.sh phase1 --gpus 0,1        # Train on GPUs 0,1
 #   ./scripts/train.sh phase2 --gpus 2,3,4,5    # Train on GPUs 2-5
 #   ./scripts/train.sh phase1 --gpus all        # Use all GPUs
+#   ./scripts/train.sh phase1 --config calvin   # Use CALVIN config
 #
 # ============================================================================
 
@@ -20,6 +21,7 @@ EPOCHS=""
 RUN_NAME=""
 PROJECT=""
 NUM_WORKERS=""
+CONFIG_NAME=""
 EXTRA_ARGS=""
 
 # Parse arguments
@@ -53,6 +55,10 @@ while [[ $# -gt 0 ]]; do
             NUM_WORKERS="$2"
             shift 2
             ;;
+        --config|-c)
+            CONFIG_NAME="$2"
+            shift 2
+            ;;
         --help|-h)
             echo "Usage: $0 [phase1|phase2] [options]"
             echo ""
@@ -63,10 +69,12 @@ while [[ $# -gt 0 ]]; do
             echo "  --name, -n        WandB run name"
             echo "  --project, -p     WandB project name"
             echo "  --workers, -w     Number of data loader workers (reduce if OOM/shm errors)"
+            echo "  --config, -c      Config file name (without .yaml): 'config' or 'calvin_config'"
             echo ""
             echo "Examples:"
             echo "  $0 phase1 --gpus 0,1 --epochs 100 --name my_experiment"
             echo "  $0 phase2 --gpus 2,3,4,5 --batch-size 8 --project my-project"
+            echo "  $0 phase1 --gpus all --config calvin_config --name calvin_experiment"
             exit 0
             ;;
         *)
@@ -102,6 +110,7 @@ echo "Geo-Flow VLA Training"
 echo "=============================================="
 echo "Phase: $PHASE"
 echo "GPUs: $GPU_IDS ($NUM_GPUS GPUs)"
+[ -n "$CONFIG_NAME" ] && echo "Config: $CONFIG_NAME"
 [ -n "$BATCH_SIZE" ] && echo "Batch size: $BATCH_SIZE (per GPU)"
 [ -n "$EPOCHS" ] && echo "Epochs: $EPOCHS"
 [ -n "$PROJECT" ] && echo "WandB project: $PROJECT"
@@ -124,6 +133,12 @@ else
     MODULE="geo_flow_vla.train.phase2_policy"
     BATCH_KEY="training.phase2.batch_size"
     EPOCH_KEY="training.phase2.epochs"
+fi
+
+# Build config name argument
+CONFIG_ARG=""
+if [ -n "$CONFIG_NAME" ]; then
+    CONFIG_ARG="--config-name=$CONFIG_NAME"
 fi
 
 # Build overrides
@@ -155,6 +170,7 @@ if [ "$NUM_GPUS" -gt 1 ]; then
     echo "Starting distributed training with $NUM_GPUS GPUs..."
     echo "  Master port: $MASTER_PORT"
     echo "  Module: $MODULE"
+    [ -n "$CONFIG_NAME" ] && echo "  Config: $CONFIG_NAME"
     echo "  Overrides: $OVERRIDES"
     
     # Use torchrun for distributed training
@@ -163,11 +179,14 @@ if [ "$NUM_GPUS" -gt 1 ]; then
         --nproc_per_node=$NUM_GPUS \
         --master_port=$MASTER_PORT \
         -m $MODULE \
+        $CONFIG_ARG \
         $OVERRIDES \
         $EXTRA_ARGS
 else
     echo "Starting single-GPU training..."
+    [ -n "$CONFIG_NAME" ] && echo "  Config: $CONFIG_NAME"
     python -m $MODULE \
+        $CONFIG_ARG \
         $OVERRIDES \
         $EXTRA_ARGS
 fi

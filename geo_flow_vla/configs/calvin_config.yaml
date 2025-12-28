@@ -1,4 +1,4 @@
-# Geo-Flow VLA Configuration
+# Geo-Flow VLA Configuration for CALVIN Dataset
 # Hydra-compatible YAML configuration for all training and model parameters
 
 defaults:
@@ -56,7 +56,7 @@ encoders:
     use_mock: false           # Set true if MoGe weights unavailable
 
 # ============================================================================
-# Data Configuration
+# Data Configuration - CALVIN Dataset
 # ============================================================================
 data:
   # Image preprocessing
@@ -64,12 +64,12 @@ data:
   normalize_mean: [0.485, 0.456, 0.406]
   normalize_std: [0.229, 0.224, 0.225]
   
-  # Dataset selection
-  dataset: "libero"           # Options: libero, rlbench, calvin
-  libero_suite: "full"         # Options: spatial, object, goal, 10, 90, 100 (long), all, full
+  # Dataset selection - CALVIN
+  dataset: "calvin"           # Using CALVIN dataset
+  calvin_env: "D"             # CALVIN environment: D, ABC, ABCD, debug
   
   # Data loading
-  num_workers: 1              # Reduce if getting shm/bus errors
+  num_workers: 0              # Set to 0 to avoid worker memory issues
   pin_memory: true
   prefetch_factor: 1
   
@@ -77,8 +77,8 @@ data:
   chunk_size: 16              # Number of actions per chunk
   overlap: 8                  # Overlap between consecutive chunks
   
-  # Data paths
-  data_root: "./data/libero"
+  # Data paths - CALVIN
+  data_root: "./data/calvin/calvin_d_lerobot"
   cache_dir: "./cache"
 
 # ============================================================================
@@ -147,10 +147,10 @@ logging:
   # Weights & Biases
   wandb:
     enabled: true
-    project: "geo-flow-vla"
+    project: "geo-flow-vla-calvin"
     entity: null              # Set your W&B entity/team
     name: null                # Run name (auto-generated if null)
-    tags: []
+    tags: ["calvin"]
     group: null               # Experiment group
     save_code: true
     
@@ -167,7 +167,7 @@ logging:
 # Checkpointing
 # ============================================================================
 checkpoint:
-  dir: "./checkpoints"
+  dir: "./checkpoints/calvin"
   resume: null                # Path to checkpoint to resume from
   save_best: true             # Save best model based on eval metric
   keep_last: 3                # Keep last N checkpoints

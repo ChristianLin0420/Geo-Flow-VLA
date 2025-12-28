@@ -185,15 +185,26 @@ class WorldModelTrainer:
         """Initialize data loaders with distributed sampling if enabled."""
         cfg = self.cfg
         
-        # Create dataset
+        # Create dataset based on config
         from torch.utils.data import random_split
         
-        full_dataset = LIBERODataset(
-            data_root=cfg.data.data_root,
-            suite=cfg.data.libero_suite,
-            action_horizon=cfg.model.action_horizon,
-            image_size=cfg.data.image_size,
-        )
+        dataset_type = cfg.data.get("dataset", "libero")
+        
+        if dataset_type == "calvin":
+            from ..data.calvin_dataset import CALVINDataset
+            full_dataset = CALVINDataset(
+                data_root=cfg.data.data_root,
+                env=cfg.data.get("calvin_env", "D"),
+                action_horizon=cfg.model.action_horizon,
+                image_size=cfg.data.image_size,
+            )
+        else:  # Default to LIBERO
+            full_dataset = LIBERODataset(
+                data_root=cfg.data.data_root,
+                suite=cfg.data.get("libero_suite", "full"),
+                action_horizon=cfg.model.action_horizon,
+                image_size=cfg.data.image_size,
+            )
         
         # Split train/val
         val_size = int(len(full_dataset) * 0.1)
@@ -505,6 +516,15 @@ class WorldModelTrainer:
                 # WandB Object3D expects colors as uint8 [0, 255]
                 rgb_colors = (rgb_np * 255).astype(np.uint8).reshape(-1, 3)  # (H*W, 3)
                 
+                # Filter out invalid points (NaN, Inf) - MoGe can produce these
+                valid_mask = np.isfinite(points).all(axis=1)
+                points = points[valid_mask]
+                rgb_colors = rgb_colors[valid_mask]
+                
+                if len(points) == 0:
+                    logger.warning("No valid points after filtering NaN/Inf")
+                    return
+                
                 # Downsample for performance
                 stride = 1
                 points_ds = points[::stride].astype(np.float64)  # WandB prefers float64 for coords
@@ -696,12 +716,19 @@ def train_world_model(cfg: DictConfig) -> None:
                 wandb_resume = "must"
                 logger.info(f"Resuming wandb run: {wandb_run_id}")
         
+        # Get dataset-specific tag for wandb
+        dataset_type = cfg.data.get("dataset", "libero")
+        if dataset_type == "calvin":
+            dataset_tag = cfg.data.get("calvin_env", "D")
+        else:
+            dataset_tag = cfg.data.get("libero_suite", "full")
+        
         wandb.init(
             project=cfg.logging.wandb.project,
             entity=cfg.logging.wandb.entity,
             name=cfg.logging.wandb.name,  # Custom run name (None = auto-generated)
             config=OmegaConf.to_container(cfg),
-            tags=["phase1", cfg.data.libero_suite, f"gpus_{world_size}"],
+            tags=["phase1", dataset_type, dataset_tag, f"gpus_{world_size}"],
             group=cfg.logging.wandb.group or f"exp_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             save_code=cfg.logging.wandb.save_code,
             id=wandb_run_id,
