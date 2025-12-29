@@ -1,4 +1,4 @@
-# Geo-Flow VLA Configuration for CALVIN Dataset
+# Geo-Flow VLA Configuration for RLBench Dataset
 # Hydra-compatible YAML configuration for all training and model parameters
 
 defaults:
@@ -13,8 +13,8 @@ model:
   semantic_dim: 1536          # DINOv2-G output dimension
   geometric_dim: 256          # MoGe point feature projection dim
   
-  # Action space
-  action_dim: 7               # 7-DoF: xyz + axis-angle rotation + gripper
+  # Action space - RLBench uses 8D actions (pos + quat + gripper)
+  action_dim: 8               # 8-DoF: xyz + quaternion (4D) + gripper
   action_horizon: 16          # Number of action steps to predict
   
   # DiT (Diffusion Transformer) architecture
@@ -56,7 +56,7 @@ encoders:
     use_mock: false           # Set true if MoGe weights unavailable
 
 # ============================================================================
-# Data Configuration - CALVIN Dataset
+# Data Configuration - RLBench Dataset
 # ============================================================================
 data:
   # Image preprocessing
@@ -64,21 +64,22 @@ data:
   normalize_mean: [0.485, 0.456, 0.406]
   normalize_std: [0.229, 0.224, 0.225]
   
-  # Dataset selection - CALVIN
-  dataset: "calvin"           # Using CALVIN dataset
-  calvin_env: "abc"             # CALVIN environment: D, ABC, ABCD, debug
+  # Dataset selection - RLBench
+  dataset: "rlbench"          # Using RLBench dataset
+  rlbench_tasks: "easy"        # Task selection: easy, medium, hard, all, or list of task names
+  rlbench_camera: "front_rgb" # Camera view: front_rgb, left_shoulder_rgb, right_shoulder_rgb, wrist_rgb
   
   # Data loading
-  num_workers: 0              # Set to 0 to avoid worker memory issues
+  num_workers: 2              # RLBench has smaller episodes, can use more workers
   pin_memory: true
-  prefetch_factor: 1
+  prefetch_factor: 2
   
   # Action chunking
   chunk_size: 16              # Number of actions per chunk
   overlap: 8                  # Overlap between consecutive chunks
   
-  # Data paths - CALVIN
-  data_root: "./data/calvin/calvin_${data.calvin_env}_lerobot"
+  # Data paths - RLBench
+  data_root: "./data/rlbench"
   cache_dir: "./cache"
 
 # ============================================================================
@@ -147,10 +148,10 @@ logging:
   # Weights & Biases
   wandb:
     enabled: true
-    project: "geo-flow-vla-calvin"
+    project: "geo-flow-vla-rlbench"
     entity: null              # Set your W&B entity/team
     name: null                # Run name (auto-generated if null)
-    tags: ["calvin"]
+    tags: ["rlbench"]
     group: null               # Experiment group
     save_code: true
     
@@ -167,7 +168,7 @@ logging:
 # Checkpointing
 # ============================================================================
 checkpoint:
-  dir: "./checkpoints/calvin/${data.calvin_env}/"
+  dir: "./checkpoints/rlbench/${data.rlbench_tasks}/"
   resume: null                # Path to checkpoint to resume from
   save_best: true             # Save best model based on eval metric
   keep_last: 3                # Keep last N checkpoints
@@ -195,4 +196,5 @@ evaluation:
   max_episode_length: 300     # Maximum steps per episode
   record_video: true
   video_fps: 30
+
 

@@ -218,8 +218,7 @@ wandb/
 
 # Slurm scripts
 interactive.sh
-sbatch.sh
-sbatch_evaluation.sh
+sbatch*.sh
 auto.sh
 slurm*.err
 slurm*.out

@@ -167,7 +167,7 @@ logging:
 # Checkpointing
 # ============================================================================
 checkpoint:
-  dir: "./checkpoints"
+  dir: "./checkpoints/libero/${data.libero_suite}/"
   resume: null                # Path to checkpoint to resume from
   save_best: true             # Save best model based on eval metric
   keep_last: 3                # Keep last N checkpoints

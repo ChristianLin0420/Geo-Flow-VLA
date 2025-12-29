@@ -202,7 +202,66 @@ Available environments:
 ./scripts/train.sh phase1 --config calvin_config --gpus all
 ```
 
-### 3. Phase 1: Train World Model
+### 3. Download RLBench Dataset
+
+```bash
+# List available RLBench tasks
+python -m geo_flow_vla.data.download.download_rlbench --list
+
+# Download all 18 tasks for all splits (~150 GB total)
+python -m geo_flow_vla.data.download.download_rlbench --task all --split all --output ./data/rlbench
+
+# Download only training split for all tasks
+python -m geo_flow_vla.data.download.download_rlbench --task all --split train --output ./data/rlbench
+
+# Download easy tasks only
+python -m geo_flow_vla.data.download.download_rlbench --task easy --output ./data/rlbench
+
+# Download medium tasks only
+python -m geo_flow_vla.data.download.download_rlbench --task medium --output ./data/rlbench
+
+# Download hard tasks only
+python -m geo_flow_vla.data.download.download_rlbench --task hard --output ./data/rlbench
+
+# Download specific tasks
+python -m geo_flow_vla.data.download.download_rlbench --task stack_blocks push_buttons open_drawer --output ./data/rlbench
+
+# Force re-download
+python -m geo_flow_vla.data.download.download_rlbench --task all --force --output ./data/rlbench
+
+# Download without extracting zip files
+python -m geo_flow_vla.data.download.download_rlbench --task all --no-extract --output ./data/rlbench
+
+# Verify existing download
+python -m geo_flow_vla.data.download.download_rlbench --verify --output ./data/rlbench
+```
+
+Available task categories:
+- `easy` - 6 tasks: close_jar, light_bulb_in, open_drawer, push_buttons, put_money_in_safe, turn_tap
+- `medium` - 6 tasks: insert_onto_square_peg, meat_off_grill, place_cups, put_groceries_in_cupboard, stack_blocks, stack_cups
+- `hard` - 6 tasks: place_shape_in_shape_sorter, place_wine_at_rack_location, put_item_in_drawer, reach_and_drag, slide_block_to_color_target, sweep_to_dustpan_of_size
+- `all` - All 18 tasks
+
+Available splits:
+- `train` - 100 episodes per task
+- `val` - 25 episodes per task
+- `test` - 25 episodes per task
+
+**Source:** [hqfang/RLBench-18-Tasks](https://huggingface.co/datasets/hqfang/RLBench-18-Tasks) on HuggingFace
+
+**Note:** RLBench uses 8D actions (pos + quaternion + gripper). To train with RLBench, use the `rlbench_config.yaml`:
+```bash
+# Train on all tasks
+./scripts/train.sh phase1 --config rlbench_config --gpus all
+
+# Train on easy tasks only
+./scripts/train.sh phase1 --config rlbench_config --gpus all data.rlbench_tasks=easy
+
+# Train on specific tasks
+./scripts/train.sh phase1 --config rlbench_config --gpus all "data.rlbench_tasks=[push_buttons,open_drawer]"
+```
+
+### 4. Phase 1: Train World Model
 
 ```bash
 # Single GPU training
@@ -224,7 +283,7 @@ WANDB_MODE=disabled python -m geo_flow_vla.train.phase1_world_model \
     data.libero_suite=spatial
 ```
 
-### 4. Phase 2: Train Policy
+### 5. Phase 2: Train Policy
 
 ```bash
 # Single GPU
@@ -255,7 +314,7 @@ The training scripts support distributed data parallel (DDP) training:
     --project "geo-flow-vla"
 ```
 
-### 5. Evaluation
+### 6. Evaluation
 
 ```bash
 # Evaluate on LIBERO benchmark

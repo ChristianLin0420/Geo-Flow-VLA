@@ -260,6 +260,22 @@ class PolicyTrainer:
                 action_horizon=cfg.model.action_horizon,
                 image_size=cfg.data.image_size,
             )
+        elif dataset_type == "rlbench":
+            from ..data.rlbench_dataset import RLBenchDataset
+            # Parse tasks - can be string category or list of task names
+            rlbench_tasks = cfg.data.get("rlbench_tasks", "all")
+            if isinstance(rlbench_tasks, str):
+                tasks = rlbench_tasks  # Let RLBenchDataset handle category names
+            else:
+                tasks = list(rlbench_tasks)
+            full_dataset = RLBenchDataset(
+                data_root=cfg.data.data_root,
+                tasks=tasks,
+                split="train",
+                action_horizon=cfg.model.action_horizon,
+                image_size=cfg.data.image_size,
+                camera=cfg.data.get("rlbench_camera", "front_rgb"),
+            )
         else:  # Default to LIBERO
             full_dataset = LIBERODataset(
                 data_root=cfg.data.data_root,
@@ -865,6 +881,8 @@ def train_policy(cfg: DictConfig) -> None:
         dataset_type = cfg.data.get("dataset", "libero")
         if dataset_type == "calvin":
             dataset_tag = cfg.data.get("calvin_env", "D")
+        elif dataset_type == "rlbench":
+            dataset_tag = cfg.data.get("rlbench_tasks", "all")
         else:
             dataset_tag = cfg.data.get("libero_suite", "full")
         
