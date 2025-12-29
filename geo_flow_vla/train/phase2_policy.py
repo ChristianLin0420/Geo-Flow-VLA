@@ -650,11 +650,18 @@ class PolicyTrainer:
         rgb: torch.Tensor,
         pred_actions: torch.Tensor,
     ) -> None:
-        """Log 3D point cloud with predicted trajectory overlaid."""
+        """Log 3D point cloud with predicted trajectory overlaid.
+        
+        Uses scale-to-scene approach and creates thick gradient-colored 
+        trajectory by densely interpolating and duplicating points.
+        """
         try:
+            from scipy.interpolate import interp1d
+            from ..utils.camera_transforms import scale_trajectory_to_scene
+            
             # Get point cloud from MoGe-2
             if rgb.dim() == 5:
-                rgb_frame = rgb[0, 0]  # First frame of first batch
+                rgb_frame = rgb[0, 0]
             else:
                 rgb_frame = rgb[0]
             
@@ -664,14 +671,10 @@ class PolicyTrainer:
                 H, W = point_map.shape[-2:]
                 points = point_map[0].permute(1, 2, 0).reshape(-1, 3).cpu().numpy()
                 
-                # Get RGB colors - images are already in [0, 1] from dataset
-                rgb_np = rgb_frame.permute(1, 2, 0).cpu().numpy()  # (H, W, 3)
+                rgb_np = rgb_frame.permute(1, 2, 0).cpu().numpy()
                 rgb_np = np.clip(rgb_np, 0, 1)
+                rgb_colors = (rgb_np * 255).reshape(-1, 3)
                 
-                # WandB Object3D expects colors as [0, 255]
-                rgb_colors = (rgb_np * 255).reshape(-1, 3)  # (H*W, 3)
-                
-                # Filter out invalid points (NaN, Inf) - MoGe can produce these
                 valid_mask = np.isfinite(points).all(axis=1)
                 points = points[valid_mask]
                 rgb_colors = rgb_colors[valid_mask]
@@ -680,22 +683,104 @@ class PolicyTrainer:
                     logger.warning("No valid points after filtering NaN/Inf")
                     return
                 
-                # Downsample point cloud
+                # Downsample scene point cloud
                 stride = 1
                 points_ds = points[::stride].astype(np.float64)
                 colors_ds = rgb_colors[::stride]
                 
-                # Get predicted trajectory positions (first 3 dims are xyz)
+                # Get predicted trajectory
                 traj_points = pred_actions[0, :, :3].cpu().numpy().astype(np.float64)
-                # Filter trajectory points for NaN/Inf
                 traj_valid = np.isfinite(traj_points).all(axis=1)
                 traj_points = traj_points[traj_valid]
-                # Red trajectory points [255, 0, 0]
-                traj_colors = np.full((len(traj_points), 3), [255.0, 0.0, 0.0])
+                
+                if len(traj_points) == 0:
+                    logger.warning("No valid trajectory points")
+                    return
+                
+                # === HANDLE CALVIN DELTA ACTIONS ===
+                # CALVIN uses position deltas, not absolute positions
+                # Accumulate deltas to get actual trajectory positions
+                dataset_type = self.cfg.data.get("dataset", "libero")
+                if dataset_type == "calvin":
+                    traj_points = np.cumsum(traj_points, axis=0)
+                
+                # Scale trajectory to scene
+                traj_points = scale_trajectory_to_scene(
+                    traj_points, 
+                    points_ds, 
+                    scale_factor=0.4
+                )
+                
+                num_traj = len(traj_points)
+                
+                # === DENSE INTERPOLATION for smooth line appearance ===
+                if num_traj >= 2:
+                    try:
+                        t_orig = np.arange(num_traj)
+                        # 20x interpolation for dense line
+                        t_interp = np.linspace(0, num_traj - 1, num_traj * 20)
+                        interp_func = interp1d(t_orig, traj_points, axis=0, kind='cubic')
+                        traj_points = interp_func(t_interp)
+                    except Exception:
+                        pass
+                
+                # === CREATE THICK LINE by duplicating with offsets ===
+                # Compute trajectory extent for scaling offsets
+                traj_extent = np.abs(traj_points - traj_points.mean(axis=0)).max()
+                thickness = traj_extent * 0.02  # 2% of trajectory extent
+                
+                # Create multiple offset copies for thickness
+                all_traj_points = [traj_points]  # Center line
+                offsets = [
+                    [thickness, 0, 0], [-thickness, 0, 0],
+                    [0, thickness, 0], [0, -thickness, 0],
+                    [0, 0, thickness], [0, 0, -thickness],
+                    [thickness, thickness, 0], [-thickness, -thickness, 0],
+                    [thickness, 0, thickness], [-thickness, 0, -thickness],
+                    [0, thickness, thickness], [0, -thickness, -thickness],
+                ]
+                for offset in offsets:
+                    all_traj_points.append(traj_points + np.array(offset))
+                
+                traj_points_thick = np.vstack(all_traj_points)
+                
+                # === COLOR GRADIENT: Blue (start) -> Green -> Yellow -> Red (end) ===
+                num_pts_per_line = len(traj_points)
+                t = np.linspace(0, 1, num_pts_per_line)
+                
+                # Rainbow gradient: Blue -> Cyan -> Green -> Yellow -> Red
+                colors_single = np.zeros((num_pts_per_line, 3))
+                colors_single[:, 0] = np.clip(2 * t - 0.5, 0, 1) * 255      # R: ramps up in second half
+                colors_single[:, 1] = np.clip(1 - np.abs(2 * t - 1), 0, 1) * 255  # G: peaks at middle
+                colors_single[:, 2] = np.clip(1 - 2 * t, 0, 1) * 255       # B: ramps down in first half
+                
+                # Repeat colors for all thickness copies
+                num_copies = len(all_traj_points)
+                traj_colors = np.tile(colors_single, (num_copies, 1))
+                
+                # Add bright start marker (larger green sphere)
+                start_pos = traj_points[0]
+                start_offsets = []
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                        for dz in [-1, 0, 1]:
+                            start_offsets.append(start_pos + np.array([dx, dy, dz]) * thickness * 2)
+                start_markers = np.array(start_offsets)
+                start_colors = np.full((len(start_markers), 3), [0.0, 255.0, 0.0])  # Green
+                
+                # Add bright end marker (larger red sphere)
+                end_pos = traj_points[-1]
+                end_offsets = []
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                        for dz in [-1, 0, 1]:
+                            end_offsets.append(end_pos + np.array([dx, dy, dz]) * thickness * 2)
+                end_markers = np.array(end_offsets)
+                end_colors = np.full((len(end_markers), 3), [255.0, 0.0, 0.0])  # Red
                 
                 # Combine scene and trajectory
-                all_points = np.vstack([points_ds, traj_points])
-                all_colors = np.vstack([colors_ds, traj_colors])
+                all_points = np.vstack([points_ds, traj_points_thick, start_markers, end_markers])
+                all_colors = np.vstack([colors_ds, traj_colors, start_colors, end_colors])
                 
                 # Create combined array
                 N = len(all_points)
@@ -709,6 +794,137 @@ class PolicyTrainer:
                 
         except Exception as e:
             logger.warning(f"Failed to log 3D point cloud with trajectory: {e}")
+
+
+    def _log_2d_trajectory_overlay(
+        self,
+        rgb: torch.Tensor,
+        pred_actions: torch.Tensor,
+        gt_actions: torch.Tensor = None,
+    ) -> None:
+        """Log 2D image with trajectory overlay for easier visualization."""
+        import matplotlib.pyplot as plt
+        from matplotlib.collections import LineCollection
+        
+        try:
+            if rgb.dim() == 5:
+                rgb_frame = rgb[0, 0]
+            else:
+                rgb_frame = rgb[0]
+            
+            img = rgb_frame.permute(1, 2, 0).cpu().numpy()
+            img = np.clip(img, 0, 1)
+            
+            # Flip image vertically only for LIBERO (agentview camera orientation)
+            # RLBench and CALVIN images are already in correct orientation
+            dataset_type = self.cfg.data.get("dataset", "libero")
+            if dataset_type == "libero":
+                img = np.flipud(img)
+            
+            fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+            
+            # Left: RGB image
+            axes[0].imshow(img)
+            axes[0].set_title('RGB Observation')
+            axes[0].axis('off')
+            
+            # Right: Trajectory in XY plane
+            ax = axes[1]
+            
+            # Get predicted trajectory
+            traj_pred = pred_actions[0, :, :3].cpu().numpy()
+            traj_valid = np.isfinite(traj_pred).all(axis=1)
+            traj_pred = traj_pred[traj_valid]
+            
+            if len(traj_pred) == 0:
+                plt.close(fig)
+                return
+            
+            # Get ground truth trajectory
+            traj_gt = None
+            if gt_actions is not None:
+                traj_gt_raw = gt_actions[0, :, :3].cpu().numpy()
+                gt_valid = np.isfinite(traj_gt_raw).all(axis=1)
+                traj_gt = traj_gt_raw[gt_valid]
+            
+            # === HANDLE CALVIN DELTA ACTIONS ===
+            # CALVIN uses position deltas, not absolute positions
+            # Accumulate deltas to get actual trajectory positions
+            dataset_type = self.cfg.data.get("dataset", "libero")
+            if dataset_type == "calvin":
+                traj_pred = np.cumsum(traj_pred, axis=0)
+                if traj_gt is not None and len(traj_gt) > 0:
+                    traj_gt = np.cumsum(traj_gt, axis=0)
+            
+            # === CENTER BOTH TRAJECTORIES ON SAME ORIGIN ===
+            # Use ground truth center as reference, shift prediction to align starts
+            if traj_gt is not None and len(traj_gt) > 0:
+                # Align predicted trajectory's START to ground truth START
+                offset = traj_gt[0, :2] - traj_pred[0, :2]
+                traj_pred_aligned = traj_pred.copy()
+                traj_pred_aligned[:, :2] += offset
+            else:
+                traj_pred_aligned = traj_pred
+            
+            # Plot predicted trajectory with color gradient
+            num_points = len(traj_pred_aligned)
+            colors = plt.cm.coolwarm(np.linspace(0, 1, num_points))
+            
+            # Draw trajectory line segments
+            if num_points >= 2:
+                segments = np.array([[traj_pred_aligned[i, :2], traj_pred_aligned[i+1, :2]] 
+                                    for i in range(num_points-1)])
+                lc = LineCollection(segments, colors=colors[:-1], linewidths=3, alpha=0.8)
+                ax.add_collection(lc)
+            
+            # Scatter points
+            ax.scatter(traj_pred_aligned[:, 0], traj_pred_aligned[:, 1], c=np.arange(num_points), 
+                    cmap='coolwarm', s=50, zorder=3, edgecolors='white', linewidths=0.5)
+            
+            # Start/End markers for prediction
+            ax.scatter(traj_pred_aligned[0, 0], traj_pred_aligned[0, 1], c='lime', s=200, marker='o', 
+                    edgecolors='black', linewidths=2, label='Pred Start', zorder=5)
+            ax.scatter(traj_pred_aligned[-1, 0], traj_pred_aligned[-1, 1], c='red', s=200, marker='*', 
+                    edgecolors='black', linewidths=2, label='Pred End', zorder=5)
+            
+            # Direction arrows
+            arrow_indices = np.linspace(0, num_points-2, min(5, num_points-1), dtype=int)
+            for i in arrow_indices:
+                dx = traj_pred_aligned[i+1, 0] - traj_pred_aligned[i, 0]
+                dy = traj_pred_aligned[i+1, 1] - traj_pred_aligned[i, 1]
+                scale = 0.3
+                ax.annotate('', xy=(traj_pred_aligned[i, 0] + dx*scale, traj_pred_aligned[i, 1] + dy*scale),
+                        xytext=(traj_pred_aligned[i, 0], traj_pred_aligned[i, 1]),
+                        arrowprops=dict(arrowstyle='->', color=colors[i], lw=2))
+            
+            # Plot ground truth
+            if traj_gt is not None and len(traj_gt) > 0:
+                ax.plot(traj_gt[:, 0], traj_gt[:, 1], 'g--', linewidth=3, 
+                    alpha=0.8, label='Ground Truth')
+                # GT start/end markers
+                ax.scatter(traj_gt[0, 0], traj_gt[0, 1], c='green', s=150, marker='o', 
+                        edgecolors='black', linewidths=2, zorder=4)
+                ax.scatter(traj_gt[-1, 0], traj_gt[-1, 1], c='darkgreen', s=150, marker='s', 
+                        edgecolors='black', linewidths=2, label='GT End', zorder=4)
+            
+            ax.set_xlabel('X Position')
+            ax.set_ylabel('Y Position')
+            ax.set_title(f'Trajectory (XY Plane) - Step {self.global_step}\n(Prediction aligned to GT start)')
+            ax.legend(loc='upper right')
+            ax.grid(True, alpha=0.3)
+            ax.set_aspect('equal', adjustable='datalim')
+            ax.autoscale()
+            
+            plt.tight_layout()
+            
+            wandb.log({
+                "phase2/2d_trajectory_overlay": wandb.Image(fig)
+            }, step=self.global_step)
+            plt.close(fig)
+            
+        except Exception as e:
+            logger.warning(f"Failed to log 2D trajectory: {e}")
+
 
     def save_checkpoint(self, is_best: bool = False) -> None:
         """Save checkpoint."""
@@ -834,8 +1050,11 @@ class PolicyTrainer:
         # Log trajectory visualization
         self._log_trajectory_visualization(pred_actions, actions)
         
-        # Log 3D point cloud with trajectory overlay
+        # Log 3D point cloud with trajectory overlay (improved with color gradient)
         self._log_3d_point_cloud_with_trajectory(rgb, pred_actions)
+        
+        # Log 2D trajectory overlay for easier visualization
+        self._log_2d_trajectory_overlay(rgb, pred_actions, actions)
 
 
 def train_policy(cfg: DictConfig) -> None:

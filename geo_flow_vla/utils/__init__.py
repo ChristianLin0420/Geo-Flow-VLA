@@ -14,6 +14,14 @@ from .rotation_equivariance import (
     rotate_actions,
     SE3Augmentation,
 )
+from .camera_transforms import (
+    get_default_camera_extrinsics,
+    transform_points_robot_to_camera,
+    transform_trajectory_to_camera_frame,
+    scale_trajectory_to_scene,
+    get_dataset_camera,
+    DATASET_CAMERA_CONFIG,
+)
 from .distributed import (
     setup_distributed,
     cleanup_distributed,
@@ -39,6 +47,13 @@ __all__ = [
     "rotate_point_cloud",
     "rotate_actions",
     "SE3Augmentation",
+    # Camera transforms
+    "get_default_camera_extrinsics",
+    "transform_points_robot_to_camera",
+    "transform_trajectory_to_camera_frame",
+    "scale_trajectory_to_scene",
+    "get_dataset_camera",
+    "DATASET_CAMERA_CONFIG",
     # Distributed training
     "setup_distributed",
     "cleanup_distributed",

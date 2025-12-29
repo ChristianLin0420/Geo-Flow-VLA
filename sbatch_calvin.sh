@@ -11,7 +11,7 @@
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=8
 #SBATCH --cpus-per-task=32 # number of cores
-#SBATCH --job-name=geo-flow-vla-calvin-phase1-train # customize your job name
+#SBATCH --job-name=geo-flow-vla-calvin-phase2-train # customize your job name
 #SBATCH --output=./logs/%x-%j/stdout.log      # !!!! Update log NAME Here
 #SBATCH --error=./logs/%x-%j/stderr.log      # !!!! Update log NAME Here
 #SBATCH --mail-type=BEGIN,END,FAIL # Adjust event types as needed
@@ -21,23 +21,23 @@
 # Configuration: Change these for different CALVIN environments
 # ============================================================================
 # Available environments: d, abc, abcd, debug
-PHASE="phase1"
+PHASE="phase2"
 CALVIN_ENV="abc"
-EPOCHS=50
+EPOCHS=200
 BATCH_SIZE=1024
 
 # ============================================================================
 # Commands array - using the configured environment
 # ============================================================================
 COMMANDS=(
-    # "pip install pyarrow pandas && bash scripts/train.sh phase1 --gpus all --config calvin_config --epochs ${EPOCHS} --batch-size ${BATCH_SIZE} --name phase1-calvin-${CALVIN_ENV}-bs${BATCH_SIZE}-epochs${EPOCHS} data.calvin_env=${CALVIN_ENV}"
-    # "pip install pyarrow pandas && bash scripts/train.sh phase1 --gpus all --config calvin_config --epochs ${EPOCHS} --batch-size ${BATCH_SIZE} --name phase1-calvin-${CALVIN_ENV}-bs${BATCH_SIZE}-epochs${EPOCHS} data.calvin_env=${CALVIN_ENV} data.num_workers=0 checkpoint.resume=./checkpoints/calvin/${CALVIN_ENV}/phase1/latest.pt"
-    # "pip install pyarrow pandas && bash scripts/train.sh phase1 --gpus all --config calvin_config --epochs ${EPOCHS} --batch-size ${BATCH_SIZE} --name phase1-calvin-${CALVIN_ENV}-bs${BATCH_SIZE}-epochs${EPOCHS} data.calvin_env=${CALVIN_ENV} data.num_workers=0 checkpoint.resume=./checkpoints/calvin/${CALVIN_ENV}/phase1/latest.pt"
-    # "pip install pyarrow pandas && bash scripts/train.sh phase1 --gpus all --config calvin_config --epochs ${EPOCHS} --batch-size ${BATCH_SIZE} --name phase1-calvin-${CALVIN_ENV}-bs${BATCH_SIZE}-epochs${EPOCHS} data.calvin_env=${CALVIN_ENV} data.num_workers=0 checkpoint.resume=./checkpoints/calvin/${CALVIN_ENV}/phase1/latest.pt"
-    # "pip install pyarrow pandas && bash scripts/train.sh phase1 --gpus all --config calvin_config --epochs ${EPOCHS} --batch-size ${BATCH_SIZE} --name phase1-calvin-${CALVIN_ENV}-bs${BATCH_SIZE}-epochs${EPOCHS} data.calvin_env=${CALVIN_ENV} data.num_workers=0 checkpoint.resume=./checkpoints/calvin/${CALVIN_ENV}/phase1/latest.pt"
-    "pip install pyarrow pandas && bash scripts/train.sh phase1 --gpus all --config calvin_config --epochs ${EPOCHS} --batch-size ${BATCH_SIZE} --name phase1-calvin-${CALVIN_ENV}-bs${BATCH_SIZE}-epochs${EPOCHS} data.calvin_env=${CALVIN_ENV} data.num_workers=0 checkpoint.resume=./checkpoints/calvin/${CALVIN_ENV}/phase1/latest.pt"
-    "pip install pyarrow pandas && bash scripts/train.sh phase1 --gpus all --config calvin_config --epochs ${EPOCHS} --batch-size ${BATCH_SIZE} --name phase1-calvin-${CALVIN_ENV}-bs${BATCH_SIZE}-epochs${EPOCHS} data.calvin_env=${CALVIN_ENV} data.num_workers=0 checkpoint.resume=./checkpoints/calvin/${CALVIN_ENV}/phase1/latest.pt"
-    "pip install pyarrow pandas && bash scripts/train.sh phase1 --gpus all --config calvin_config --epochs ${EPOCHS} --batch-size ${BATCH_SIZE} --name phase1-calvin-${CALVIN_ENV}-bs${BATCH_SIZE}-epochs${EPOCHS} data.calvin_env=${CALVIN_ENV} data.num_workers=0 checkpoint.resume=./checkpoints/calvin/${CALVIN_ENV}/phase1/latest.pt"
+    "pip install pyarrow pandas && bash scripts/train.sh ${PHASE} --gpus all --config calvin_config --epochs ${EPOCHS} --batch-size ${BATCH_SIZE} --name ${PHASE}-calvin-${CALVIN_ENV}-bs${BATCH_SIZE}-epochs${EPOCHS} data.calvin_env=${CALVIN_ENV}"
+    "pip install pyarrow pandas && bash scripts/train.sh ${PHASE} --gpus all --config calvin_config --epochs ${EPOCHS} --batch-size ${BATCH_SIZE} --name ${PHASE}-calvin-${CALVIN_ENV}-bs${BATCH_SIZE}-epochs${EPOCHS} data.calvin_env=${CALVIN_ENV} data.num_workers=0 checkpoint.resume=./checkpoints/calvin/${CALVIN_ENV}/${PHASE}/latest.pt"
+    "pip install pyarrow pandas && bash scripts/train.sh ${PHASE} --gpus all --config calvin_config --epochs ${EPOCHS} --batch-size ${BATCH_SIZE} --name ${PHASE}-calvin-${CALVIN_ENV}-bs${BATCH_SIZE}-epochs${EPOCHS} data.calvin_env=${CALVIN_ENV} data.num_workers=0 checkpoint.resume=./checkpoints/calvin/${CALVIN_ENV}/${PHASE}/latest.pt"
+    "pip install pyarrow pandas && bash scripts/train.sh ${PHASE} --gpus all --config calvin_config --epochs ${EPOCHS} --batch-size ${BATCH_SIZE} --name ${PHASE}-calvin-${CALVIN_ENV}-bs${BATCH_SIZE}-epochs${EPOCHS} data.calvin_env=${CALVIN_ENV} data.num_workers=0 checkpoint.resume=./checkpoints/calvin/${CALVIN_ENV}/${PHASE}/latest.pt"
+    "pip install pyarrow pandas && bash scripts/train.sh ${PHASE} --gpus all --config calvin_config --epochs ${EPOCHS} --batch-size ${BATCH_SIZE} --name ${PHASE}-calvin-${CALVIN_ENV}-bs${BATCH_SIZE}-epochs${EPOCHS} data.calvin_env=${CALVIN_ENV} data.num_workers=0 checkpoint.resume=./checkpoints/calvin/${CALVIN_ENV}/${PHASE}/latest.pt"
+    "pip install pyarrow pandas && bash scripts/train.sh ${PHASE} --gpus all --config calvin_config --epochs ${EPOCHS} --batch-size ${BATCH_SIZE} --name ${PHASE}-calvin-${CALVIN_ENV}-bs${BATCH_SIZE}-epochs${EPOCHS} data.calvin_env=${CALVIN_ENV} data.num_workers=0 checkpoint.resume=./checkpoints/calvin/${CALVIN_ENV}/${PHASE}/latest.pt"
+    "pip install pyarrow pandas && bash scripts/train.sh ${PHASE} --gpus all --config calvin_config --epochs ${EPOCHS} --batch-size ${BATCH_SIZE} --name ${PHASE}-calvin-${CALVIN_ENV}-bs${BATCH_SIZE}-epochs${EPOCHS} data.calvin_env=${CALVIN_ENV} data.num_workers=0 checkpoint.resume=./checkpoints/calvin/${CALVIN_ENV}/${PHASE}/latest.pt"
+    "pip install pyarrow pandas && bash scripts/train.sh ${PHASE} --gpus all --config calvin_config --epochs ${EPOCHS} --batch-size ${BATCH_SIZE} --name ${PHASE}-calvin-${CALVIN_ENV}-bs${BATCH_SIZE}-epochs${EPOCHS} data.calvin_env=${CALVIN_ENV} data.num_workers=0 checkpoint.resume=./checkpoints/calvin/${CALVIN_ENV}/${PHASE}/latest.pt"
 )
 
 # File to store the current index
