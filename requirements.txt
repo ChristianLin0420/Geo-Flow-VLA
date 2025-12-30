@@ -3,9 +3,11 @@
 
 # =============================================================================
 # Core Dependencies
+# Note: torch and torchvision are provided by Docker base image
+# Uncomment for local installation without Docker
 # =============================================================================
-torch>=2.1.0
-torchvision>=0.16.0
+# torch>=2.1.0
+# torchvision>=0.16.0
 numpy>=1.24.0
 einops>=0.7.0
 

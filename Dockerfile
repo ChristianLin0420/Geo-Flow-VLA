@@ -130,7 +130,18 @@ RUN mkdir -p \
 # =============================================================================
 # Set PYTHONPATH
 # =============================================================================
-ENV PYTHONPATH=/workspace/Geo-Flow-VLA:${PYTHONPATH}
+ENV PYTHONPATH=/workspace/Geo-Flow-VLA
+
+# =============================================================================
+# Fix torch/torchvision versions (xformers may have upgraded them)
+# =============================================================================
+RUN pip install --no-cache-dir --force-reinstall torch==2.4.0 torchvision==0.19.0 --index-url https://download.pytorch.org/whl/cu124
+
+# Uninstall incompatible xformers (was built for wrong torch version)
+# and reinstall compatible version for PyTorch 2.4.0
+RUN pip uninstall -y xformers && \
+    pip install --no-cache-dir xformers==0.0.27.post2 --index-url https://download.pytorch.org/whl/cu124 || \
+    echo "Warning: xFormers installation failed, DINOv2 will work without it"
 
 # =============================================================================
 # Pre-download Models (optional, comment out to reduce image size)
