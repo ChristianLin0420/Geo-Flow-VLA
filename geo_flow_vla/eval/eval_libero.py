@@ -14,6 +14,7 @@ Usage:
 from typing import Dict, List, Any, Optional
 import numpy as np
 import logging
+import os
 
 from .base_evaluator import BaseEvaluator
 
@@ -52,8 +53,8 @@ class LIBEROEvaluator(BaseEvaluator):
             raise ValueError(f"Unknown suite: {task_suite}. Choose from {LIBERO_SUITES}")
         
         self.task_suite = task_suite
-        self.task_configs = None
-        self._env_class = None
+        self.benchmark = None
+        self.task_descriptions = None
         
         super().__init__(**kwargs)
         
@@ -62,34 +63,28 @@ class LIBEROEvaluator(BaseEvaluator):
         return f"libero_{self.task_suite}"
     
     def setup_environment(self, **kwargs) -> None:
-        """Initialize LIBERO environments."""
+        """Initialize LIBERO environments using official benchmark API."""
         try:
-            # LIBERO has nested package structure: libero/libero/envs
-            from libero.libero.envs import TASK_MAPPING
+            from libero.libero.benchmark import get_benchmark
             from libero.libero import get_libero_path
             
-            # Get benchmark directory
-            import os
-            import json
+            # Use official LIBERO benchmark API
+            benchmark_dict = get_benchmark(self.task_suite)
+            self.benchmark = benchmark_dict()
             
-            benchmark_root = get_libero_path("benchmark_root")
-            task_suite_name = self.task_suite if self.task_suite.startswith("libero_") else f"libero_{self.task_suite}"
+            # Get task language descriptions from task objects
+            self.task_descriptions = []
+            for i in range(self.benchmark.n_tasks):
+                task = self.benchmark.get_task(i)
+                self.task_descriptions.append(task.language)
             
-            # Load task configs from benchmark JSON
-            task_suite_file = os.path.join(benchmark_root, f"{task_suite_name}.json")
+            n_tasks = self.benchmark.n_tasks
+            logger.info(f"✓ LIBERO {self.task_suite}: {n_tasks} tasks")
+            print(f"✓ LIBERO {self.task_suite}: {n_tasks} tasks")
             
-            if os.path.exists(task_suite_file):
-                with open(task_suite_file, 'r') as f:
-                    self.task_configs = json.load(f)
-                self._tasks_from_json = True
-            else:
-                # Fallback: use TASK_MAPPING keys
-                logger.warning(f"Task suite file not found: {task_suite_file}")
-                self.task_configs = [{"name": k} for k in TASK_MAPPING.keys()]
-                self._tasks_from_json = False
-            
-            logger.info(f"✓ LIBERO {self.task_suite}: {len(self.task_configs)} tasks")
-            print(f"✓ LIBERO {self.task_suite}: {len(self.task_configs)} tasks")
+            # Print task names
+            for i, name in enumerate(self.benchmark.get_task_names()):
+                logger.debug(f"  Task {i}: {name}")
             
         except ImportError as e:
             raise ImportError(
@@ -97,34 +92,30 @@ class LIBEROEvaluator(BaseEvaluator):
                 "Install with:\n"
                 "  cd /tmp && git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git\n"
                 "  touch /tmp/LIBERO/libero/__init__.py\n"
-                "  export PYTHONPATH=/tmp/LIBERO:$PYTHONPATH\n"
+                "  pip install -e /tmp/LIBERO\n"
                 "  pip install robosuite==1.4.1"
             )
     
     def get_tasks(self) -> List[str]:
         """Return task names in suite."""
-        if self.task_configs is None:
+        if self.benchmark is None:
             self.setup_environment()
-        # Handle both dict format and object format
-        tasks = []
-        for task in self.task_configs:
-            if isinstance(task, dict):
-                tasks.append(task.get("name", task.get("task_name", str(task))))
-            else:
-                tasks.append(task.name if hasattr(task, 'name') else str(task))
-        return tasks
+        return self.benchmark.get_task_names()
     
     def _create_env(self, task_idx: int):
-        """Create environment for a specific task."""
+        """Create environment for a specific task using LIBERO benchmark API."""
         from libero.libero.envs import OffScreenRenderEnv
+        from libero.libero import get_libero_path
         
-        task = self.task_configs[task_idx]
+        # Get task from benchmark
+        task = self.benchmark.get_task(task_idx)
         
-        # Get bddl file path
-        if isinstance(task, dict):
-            bddl_file = task.get("bddl_file", task.get("bddl_file_name", ""))
-        else:
-            bddl_file = task.bddl_file if hasattr(task, 'bddl_file') else ""
+        # Get BDDL file path - need full path
+        bddl_files_path = get_libero_path("bddl_files")
+        bddl_file = os.path.join(bddl_files_path, task.problem_folder, task.bddl_file)
+        
+        # Get init states
+        init_states = self.benchmark.get_task_init_states(task_idx)
         
         env = OffScreenRenderEnv(
             bddl_file_name=bddl_file,
@@ -137,6 +128,9 @@ class LIBEROEvaluator(BaseEvaluator):
             camera_widths=[128],
             reward_shaping=False,
         )
+        
+        # Store init states for resetting
+        env._init_states = init_states
         
         return env
     
@@ -156,11 +150,23 @@ class LIBEROEvaluator(BaseEvaluator):
         env = self._create_env(task_idx)
         
         try:
-            obs = env.reset()
+            # Reset with init state if available
+            init_states = env._init_states if hasattr(env, '_init_states') else None
+            if init_states is not None and len(init_states) > 0:
+                # Pick an init state based on episode index
+                init_state_idx = episode_idx % len(init_states)
+                obs = env.reset()
+                env.set_init_state(init_states[init_state_idx])
+                # Step with zero action to get updated observation
+                obs, _, _, _ = env.step(np.zeros(7))
+            else:
+                obs = env.reset()
+            
             self.policy.reset()
             
             total_reward = 0
             success = False
+            step = 0
             
             for step in range(self.max_steps):
                 # Get RGB observation
@@ -169,10 +175,16 @@ class LIBEROEvaluator(BaseEvaluator):
                 # Get proprioception
                 proprio = self._get_proprio(obs)
                 
+                # Get language instruction if available
+                instruction = None
+                if self.task_descriptions is not None and task_idx < len(self.task_descriptions):
+                    instruction = self.task_descriptions[task_idx]
+                
                 # Get action from policy
                 action = self.policy.predict(
                     rgb=rgb,
                     proprio=proprio,
+                    instruction=instruction,
                 )
                 
                 # Ensure action is correct dimension (7D for LIBERO)
@@ -193,10 +205,12 @@ class LIBEROEvaluator(BaseEvaluator):
             
             # Final success check
             if not success:
-                success = env._check_success()
+                success = env.check_success()
             
         except Exception as e:
             logger.error(f"Episode failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             success = False
             step = 0
             total_reward = 0

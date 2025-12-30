@@ -75,7 +75,13 @@ class GeoFlowVLAPolicy:
         self.action_buffer = None
         self.buffer_idx = 0
         
+        # Inference settings from config
+        training_cfg = self.cfg.get("training", {})
+        phase2_cfg = training_cfg.get("phase2", {}) if training_cfg else {}
+        self.num_inference_steps = phase2_cfg.get("num_inference_steps", 50) if phase2_cfg else 50
+        
         logger.info(f"GeoFlowVLAPolicy initialized from {checkpoint_dir}")
+        logger.info(f"Using num_inference_steps={self.num_inference_steps}")
     
     def _load_policy_state_dict(self) -> Optional[Dict]:
         """Load policy state dict to infer architecture dimensions."""
@@ -150,43 +156,64 @@ class GeoFlowVLAPolicy:
             freeze_backbones=True,
         ).to(self.device)
         
-        # World Model (frozen)
+        # Get model config - use correct paths matching training
+        state_dim = cfg.model.get("state_dim", 512)
+        action_dim = cfg.model.get("action_dim", 7)
+        action_horizon = cfg.model.get("action_horizon", 16)
+        
+        # Get FB world model config
+        fb_cfg = cfg.model.get("fb", {}) if hasattr(cfg.model, "get") else {}
+        if not fb_cfg and hasattr(cfg.model, "fb"):
+            fb_cfg = dict(cfg.model.fb)
+        latent_dim = fb_cfg.get("latent_dim", 256) if fb_cfg else cfg.model.get("latent_dim", 256)
+        fb_hidden_dim = fb_cfg.get("hidden_dim", 512) if fb_cfg else 512
+        num_residual_blocks = fb_cfg.get("num_residual_blocks", 2) if fb_cfg else 2
+        
+        # World Model (frozen) - use explicit parameters matching training
         self.world_model = FBWorldModel(
-            state_dim=cfg.model.get("state_dim", 512),
-            action_dim=cfg.data.get("action_dim", 7),
-            action_horizon=cfg.data.get("action_horizon", 16),
-            latent_dim=cfg.model.get("latent_dim", 256),
+            state_dim=state_dim,
+            action_dim=action_dim,
+            action_horizon=action_horizon,
+            latent_dim=latent_dim,
+            hidden_dim=fb_hidden_dim,
+            num_residual_blocks=num_residual_blocks,
         ).to(self.device)
+        
+        logger.info(f"WorldModel: state_dim={state_dim}, action_dim={action_dim}, "
+                    f"action_horizon={action_horizon}, latent_dim={latent_dim}")
         
         # Diffusion Policy - infer dimensions from checkpoint first
         inferred_hidden, inferred_layers, inferred_heads = self._infer_policy_dims(self._policy_state_dict)
         
-        policy_cfg = cfg.model.get("policy", {}) if hasattr(cfg.model, "get") else {}
-        if not policy_cfg and hasattr(cfg.model, "policy"):
-            policy_cfg = cfg.model.policy
+        # Get DiT config
+        dit_cfg = cfg.model.get("dit", {}) if hasattr(cfg.model, "get") else {}
+        if not dit_cfg and hasattr(cfg.model, "dit"):
+            dit_cfg = dict(cfg.model.dit)
         
         # Use inferred values as primary, fall back to config
         hidden_dim = inferred_hidden if self._policy_state_dict else (
-            policy_cfg.get("hidden_dim", 512) if policy_cfg else cfg.model.get("hidden_dim", 512)
+            dit_cfg.get("hidden_dim", 512) if dit_cfg else 512
         )
         num_layers = inferred_layers if self._policy_state_dict else (
-            policy_cfg.get("num_layers", 6) if policy_cfg else cfg.model.get("num_layers", 6)
+            dit_cfg.get("num_layers", 6) if dit_cfg else 6
         )
         num_heads = inferred_heads if self._policy_state_dict else (
-            policy_cfg.get("num_heads", 8) if policy_cfg else cfg.model.get("num_heads", 8)
+            dit_cfg.get("num_heads", 8) if dit_cfg else 8
         )
-        dropout = policy_cfg.get("dropout", 0.1) if policy_cfg else cfg.model.get("dropout", 0.1)
+        dropout = dit_cfg.get("dropout", 0.1) if dit_cfg else 0.1
         
         self.policy = DiffusionPolicy(
-            state_dim=cfg.model.get("state_dim", 512),
-            action_dim=cfg.data.get("action_dim", 7),
-            action_horizon=cfg.data.get("action_horizon", 16),
-            latent_dim=cfg.model.get("latent_dim", 256),
+            state_dim=state_dim,
+            action_dim=action_dim,
+            action_horizon=action_horizon,
+            latent_dim=latent_dim,
             hidden_dim=hidden_dim,
             num_layers=num_layers,
             num_heads=num_heads,
             dropout=dropout,
         ).to(self.device)
+        
+        logger.info(f"DiffusionPolicy: hidden_dim={hidden_dim}, num_layers={num_layers}, num_heads={num_heads}")
         
         # Set all to eval mode
         self.dual_encoder.eval()
@@ -272,12 +299,26 @@ class GeoFlowVLAPolicy:
         action_chunk = self.policy.sample(
             state=state,
             goal=goal,
-            num_inference_steps=10,  # DDIM/Euler steps
+            num_steps=self.num_inference_steps,
         )  # (1, action_horizon, action_dim)
         
         # Store in buffer
         self.action_buffer = action_chunk[0].cpu().numpy()  # (action_horizon, action_dim)
         self.buffer_idx = 1  # Return first action now
+        
+        # Debug logging for action statistics (only log every N calls to avoid spam)
+        if not hasattr(self, '_predict_call_count'):
+            self._predict_call_count = 0
+        self._predict_call_count += 1
+        
+        if self._predict_call_count <= 5 or self._predict_call_count % 100 == 0:
+            action_stats = self.action_buffer
+            logger.info(
+                f"[Action Debug #{self._predict_call_count}] "
+                f"mean={action_stats.mean():.4f}, std={action_stats.std():.4f}, "
+                f"min={action_stats.min():.4f}, max={action_stats.max():.4f}"
+            )
+            logger.info(f"  First action: {self.action_buffer[0]}")
         
         return self.action_buffer[0]  # (action_dim,)
     
@@ -312,7 +353,7 @@ class GeoFlowVLAPolicy:
         action_chunk = self.policy.sample(
             state=state,
             goal=goal,
-            num_inference_steps=10,
+            num_steps=self.num_inference_steps,
         )
         
         return action_chunk[0].cpu().numpy()

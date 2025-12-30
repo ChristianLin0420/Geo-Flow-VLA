@@ -282,7 +282,9 @@ class BaseEvaluator(ABC):
         
         try:
             import imageio
-            imageio.mimsave(str(video_path), frames, fps=30)
+            # Flip frames vertically for correct orientation in saved video
+            flipped_frames = [np.flipud(frame) for frame in frames]
+            imageio.mimsave(str(video_path), flipped_frames, fps=30)
             logger.info(f"Saved video: {video_path}")
             
             if self.log_wandb:
