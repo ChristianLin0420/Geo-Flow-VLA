@@ -222,3 +222,7 @@ sbatch*.sh
 auto.sh
 slurm*.err
 slurm*.out
+
+# Evaluation
+eval_results/
+eval_dataset/

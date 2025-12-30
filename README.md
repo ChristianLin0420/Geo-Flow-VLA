@@ -316,13 +316,119 @@ The training scripts support distributed data parallel (DDP) training:
 
 ### 6. Evaluation
 
+Evaluate trained models on all three benchmarks:
+
+#### Quick Start
+
 ```bash
-# Evaluate on LIBERO benchmark
-python -m geo_flow_vla.eval.evaluate \
-    --checkpoint ./checkpoints/phase2/policy.pth \
-    --suite libero_spatial \
-    --num_episodes 50
+# Using unified eval script
+bash scripts/eval.sh libero ./checkpoints/libero/full --suite libero_10
+bash scripts/eval.sh rlbench ./checkpoints/rlbench/all --category easy
+bash scripts/eval.sh calvin ./checkpoints/calvin/abc --calvin_root ./data/calvin
 ```
+
+#### LIBERO Evaluation
+
+```bash
+python -m geo_flow_vla.eval.eval_libero \
+    --checkpoint ./checkpoints/libero/full \
+    --suite libero_10 \
+    --n_rollouts 50
+```
+
+**Arguments:**
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--checkpoint` | (required) | Path to checkpoint directory |
+| `--config` | None | Path to config yaml (optional) |
+| `--suite` | `libero_10` | Task suite: `libero_10`, `libero_90`, `libero_spatial`, `libero_object`, `libero_goal` |
+| `--n_rollouts` | 50 | Number of rollouts per task |
+| `--max_steps` | 400 | Maximum steps per episode |
+| `--device` | `cuda` | Torch device |
+| `--seed` | 42 | Random seed |
+| `--no_wandb` | False | Disable W&B logging |
+| `--save_videos` | False | Save rollout videos |
+| `--output_dir` | `./eval_results/libero` | Output directory |
+
+#### RLBench Evaluation
+
+```bash
+python -m geo_flow_vla.eval.eval_rlbench \
+    --checkpoint ./checkpoints/rlbench/all \
+    --category all \
+    --n_rollouts 25
+```
+
+**Arguments:**
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--checkpoint` | (required) | Path to checkpoint directory |
+| `--config` | None | Path to config yaml (optional) |
+| `--tasks` | None | Specific tasks to evaluate (space-separated) |
+| `--category` | None | Task category: `easy`, `medium`, `hard`, `all` |
+| `--n_rollouts` | 25 | Number of rollouts per task |
+| `--max_steps` | 200 | Maximum steps per episode |
+| `--camera` | `front_rgb` | Camera view: `front_rgb`, `left_shoulder_rgb`, `right_shoulder_rgb`, `wrist_rgb` |
+| `--device` | `cuda` | Torch device |
+| `--seed` | 42 | Random seed |
+| `--no_headless` | False | Show CoppeliaSim GUI |
+| `--no_wandb` | False | Disable W&B logging |
+| `--save_videos` | False | Save rollout videos |
+| `--output_dir` | `./eval_results/rlbench` | Output directory |
+
+**Task Categories:**
+- `easy`: reach_target, pick_up_cup, push_buttons, pick_and_lift
+- `medium`: take_lid_off_saucepan, put_item_in_drawer, stack_wine, put_knife_on_chopping_board, stack_blocks, close_jar, slide_block_to_color_target, meat_off_grill
+- `hard`: place_wine_at_rack_location, place_cups, take_umbrella_out_of_umbrella_stand, sweep_to_dustpan_of_size, light_bulb_in, put_groceries_in_cupboard
+
+#### CALVIN Evaluation
+
+```bash
+python -m geo_flow_vla.eval.eval_calvin \
+    --checkpoint ./checkpoints/calvin/abc \
+    --calvin_root ./data/calvin \
+    --split D \
+    --n_chains 1000
+```
+
+**Arguments:**
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--checkpoint` | (required) | Path to checkpoint directory |
+| `--config` | None | Path to config yaml (optional) |
+| `--calvin_root` | (required) | Path to CALVIN dataset/environment |
+| `--split` | `D` | Evaluation split: `D`, `ABC`, `ABCD` |
+| `--n_chains` | 1000 | Number of evaluation chains |
+| `--tasks_per_chain` | 5 | Maximum tasks per chain |
+| `--steps_per_task` | 360 | Maximum steps per subtask |
+| `--device` | `cuda` | Torch device |
+| `--seed` | 42 | Random seed |
+| `--no_wandb` | False | Disable W&B logging |
+| `--save_videos` | False | Save rollout videos |
+| `--output_dir` | `./eval_results/calvin` | Output directory |
+
+#### SLURM Batch Evaluation
+
+```bash
+# LIBERO (configure via environment variables)
+SUITE=libero_10 CHECKPOINT=./checkpoints/libero/full sbatch sbatch_eval_libero.sh
+
+# RLBench
+CATEGORY=easy CHECKPOINT=./checkpoints/rlbench/all sbatch sbatch_eval_rlbench.sh
+
+# CALVIN
+SPLIT=D CHECKPOINT=./checkpoints/calvin/abc sbatch sbatch_eval_calvin.sh
+```
+
+#### Evaluation Metrics
+
+| Benchmark | Primary Metric | Additional Metrics |
+|-----------|---------------|-------------------|
+| **LIBERO** | Success Rate (%) | Per-task success rate, avg steps to success |
+| **RLBench** | Success Rate (%) | Per-task success rate, avg steps |
+| **CALVIN** | Avg Completed Tasks (0-5) | % completing ≥1/2/3/4/5 tasks, full chain success rate |
+
+Results are saved to JSON files in the output directory and optionally logged to W&B.
 
 ## Configuration
 

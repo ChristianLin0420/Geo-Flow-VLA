@@ -329,7 +329,7 @@ class StateActionNormalizer(nn.Module):
         path = Path(path)
         
         if path.suffix == ".pt":
-            stats = torch.load(path)
+            stats = torch.load(path, weights_only=False)
         else:
             with open(path, "r") as f:
                 stats = json.load(f)

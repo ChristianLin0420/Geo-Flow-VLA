@@ -634,7 +634,7 @@ class WorldModelTrainer:
 
     def load_checkpoint(self, path: str) -> None:
         """Load checkpoint."""
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         
         self.world_model_module.load_state_dict(checkpoint["world_model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -726,7 +726,7 @@ def train_world_model(cfg: DictConfig) -> None:
         wandb_run_id = None
         wandb_resume = None
         if cfg.checkpoint.resume:
-            resume_ckpt = torch.load(cfg.checkpoint.resume, map_location="cpu")
+            resume_ckpt = torch.load(cfg.checkpoint.resume, map_location="cpu", weights_only=False)
             wandb_run_id = resume_ckpt.get("wandb_run_id")
             if wandb_run_id:
                 wandb_resume = "must"

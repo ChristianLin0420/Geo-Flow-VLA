@@ -147,7 +147,7 @@ class PolicyTrainer:
         # Load pretrained world model
         world_model_path = Path(cfg.checkpoint.dir) / "phase1" / "world_model.pth"
         if world_model_path.exists():
-            self.world_model.load_state_dict(torch.load(world_model_path, map_location=self.device))
+            self.world_model.load_state_dict(torch.load(world_model_path, map_location=self.device, weights_only=False))
             logger.info(f"Loaded world model from {world_model_path}")
         else:
             logger.warning(f"World model not found at {world_model_path}, using random init")
@@ -953,7 +953,7 @@ class PolicyTrainer:
 
     def load_checkpoint(self, path: str) -> None:
         """Load checkpoint."""
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         
         self.policy_module.load_state_dict(checkpoint["policy_state_dict"])
         self.discriminator_module.load_state_dict(checkpoint["discriminator_state_dict"])
@@ -1090,7 +1090,7 @@ def train_policy(cfg: DictConfig) -> None:
         wandb_run_id = None
         wandb_resume = None
         if cfg.checkpoint.resume:
-            resume_ckpt = torch.load(cfg.checkpoint.resume, map_location="cpu")
+            resume_ckpt = torch.load(cfg.checkpoint.resume, map_location="cpu", weights_only=False)
             wandb_run_id = resume_ckpt.get("wandb_run_id")
             if wandb_run_id:
                 wandb_resume = "must"
