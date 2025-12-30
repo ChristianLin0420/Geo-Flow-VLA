@@ -23,7 +23,7 @@ model:
     num_layers: 12            # Number of transformer blocks
     num_heads: 12             # Number of attention heads
     mlp_ratio: 4.0            # MLP expansion ratio
-    dropout: 0.1              # Dropout rate
+    dropout: 0.15             # Dropout rate (increased for regularization)
     
   # Forward-Backward World Model
   fb:
@@ -108,9 +108,12 @@ training:
     batch_size: 64
     lr_policy: 3.0e-5
     lr_discriminator: 1.0e-4
-    weight_decay: 1.0e-5
+    weight_decay: 5.0e-5      # Increased for regularization (was 1.0e-5)
     warmup_steps: 2000
     gradient_clip: 1.0
+    
+    # World model checkpoint
+    world_model_path: null    # Path to world model; null = auto-detect from checkpoint.dir/phase1/
     
     # CPR parameters
     cpr_lambda_start: 0.0     # Initial CPR weight
@@ -121,6 +124,11 @@ training:
     # Flow matching
     schedule: "linear"        # Options: linear, cosine, ot
     num_inference_steps: 50   # Steps for inference sampling
+    
+    # Early stopping to prevent overfitting
+    early_stopping: true
+    early_stopping_patience: 15    # Stop if no improvement for N epochs
+    early_stopping_min_delta: 0.001  # Minimum improvement threshold
     
     # Checkpointing
     save_every: 5
@@ -133,12 +141,20 @@ augmentation:
   enabled: true
   
   # SE(3) augmentation
-  rotation_range: 0.0         # 0 = full SO(3), >0 = limited z-rotation (rad)
-  translation_range: 0.1      # Translation range in meters
+  rotation_range: 0.15        # Enable rotation augmentation (radians)
+  translation_range: 0.15     # Translation range in meters (increased)
   
-  # Additional augmentations
-  color_jitter: false
-  random_crop: false
+  # Color jitter augmentation
+  color_jitter: true          # Enable color augmentation
+  color_jitter_brightness: 0.2
+  color_jitter_contrast: 0.2
+  color_jitter_saturation: 0.2
+  color_jitter_hue: 0.05
+  
+  # Random crop augmentation
+  random_crop: true           # Enable random crop
+  crop_scale_min: 0.85        # Minimum crop scale
+  crop_scale_max: 1.0         # Maximum crop scale
 
 # ============================================================================
 # Logging and Checkpointing
@@ -167,7 +183,7 @@ logging:
 # Checkpointing
 # ============================================================================
 checkpoint:
-  dir: "./checkpoints/libero/${data.libero_suite}/"
+  dir: "./checkpoints/libero/original+aug/${data.libero_suite}/"
   resume: null                # Path to checkpoint to resume from
   save_best: true             # Save best model based on eval metric
   keep_last: 3                # Keep last N checkpoints

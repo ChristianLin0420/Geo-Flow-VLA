@@ -49,6 +49,7 @@ from ..losses.flow_matching_loss import FlowMatchingLoss
 from ..losses.cpr_regularizer import CPRRegularizer
 from ..data.libero_dataset import LIBERODataset, create_libero_dataloaders
 from ..data.normalizer import StateActionNormalizer
+from ..data.transforms import create_augmentation
 from ..utils.distributed import (
     setup_distributed,
     cleanup_distributed,
@@ -64,6 +65,79 @@ from ..utils.distributed import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class EarlyStopping:
+    """
+    Early stopping to prevent overfitting.
+    
+    Monitors validation metric and stops training if no improvement
+    for a specified number of epochs (patience).
+    """
+    
+    def __init__(
+        self,
+        patience: int = 10,
+        min_delta: float = 0.001,
+        mode: str = "min",
+    ):
+        """
+        Args:
+            patience: Number of epochs to wait for improvement
+            min_delta: Minimum change to qualify as improvement
+            mode: "min" for loss (lower is better), "max" for accuracy
+        """
+        self.patience = patience
+        self.min_delta = min_delta
+        self.mode = mode
+        self.best_value = float('inf') if mode == "min" else float('-inf')
+        self.counter = 0
+        self.should_stop = False
+        self.best_epoch = 0
+    
+    def __call__(self, value: float, epoch: int = 0) -> bool:
+        """
+        Check if should stop.
+        
+        Args:
+            value: Current validation metric
+            epoch: Current epoch number
+            
+        Returns:
+            True if should stop training
+        """
+        if self.mode == "min":
+            improved = value < (self.best_value - self.min_delta)
+        else:
+            improved = value > (self.best_value + self.min_delta)
+        
+        if improved:
+            self.best_value = value
+            self.counter = 0
+            self.best_epoch = epoch
+            logger.info(f"Early stopping: new best value {value:.4f} at epoch {epoch}")
+        else:
+            self.counter += 1
+            logger.info(f"Early stopping: no improvement for {self.counter}/{self.patience} epochs")
+            if self.counter >= self.patience:
+                self.should_stop = True
+                logger.info(f"Early stopping triggered! Best: {self.best_value:.4f} at epoch {self.best_epoch}")
+        
+        return self.should_stop
+    
+    def state_dict(self) -> Dict:
+        """Save early stopping state."""
+        return {
+            "best_value": self.best_value,
+            "counter": self.counter,
+            "best_epoch": self.best_epoch,
+        }
+    
+    def load_state_dict(self, state: Dict) -> None:
+        """Load early stopping state."""
+        self.best_value = state["best_value"]
+        self.counter = state["counter"]
+        self.best_epoch = state["best_epoch"]
 
 
 class PolicyTrainer:
@@ -117,6 +191,24 @@ class PolicyTrainer:
         self.ckpt_dir = Path(cfg.checkpoint.dir) / "phase2"
         if self.is_main:
             self.ckpt_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Image augmentation for reducing overfitting
+        self.augmentation = create_augmentation(cfg)
+        if self.augmentation is not None:
+            self.augmentation = self.augmentation.to(self.device)
+            logger.info(f"✓ Image augmentation enabled")
+        
+        # Early stopping
+        phase2_cfg = cfg.training.phase2
+        if phase2_cfg.get("early_stopping", False):
+            self.early_stopping = EarlyStopping(
+                patience=phase2_cfg.get("early_stopping_patience", 10),
+                min_delta=phase2_cfg.get("early_stopping_min_delta", 0.001),
+                mode="min",  # Stop when val loss stops decreasing
+            )
+            logger.info(f"✓ Early stopping enabled (patience={self.early_stopping.patience})")
+        else:
+            self.early_stopping = None
 
     def _build_models(self) -> None:
         """Initialize all models."""
@@ -145,10 +237,23 @@ class PolicyTrainer:
         ).to(self.device)
         
         # Load pretrained world model
-        world_model_path = Path(cfg.checkpoint.dir) / "phase1" / "world_model.pth"
+        # Check if custom path is specified, otherwise auto-detect
+        custom_wm_path = cfg.training.phase2.get("world_model_path", None)
+        if custom_wm_path is not None:
+            world_model_path = Path(custom_wm_path)
+        else:
+            world_model_path = Path(cfg.checkpoint.dir) / "phase1" / "world_model.pth"
+        
         if world_model_path.exists():
-            self.world_model.load_state_dict(torch.load(world_model_path, map_location=self.device, weights_only=False))
-            logger.info(f"Loaded world model from {world_model_path}")
+            checkpoint = torch.load(world_model_path, map_location=self.device, weights_only=False)
+            # Support both full checkpoint (epoch_*.pt) and state_dict only (world_model.pth)
+            if isinstance(checkpoint, dict) and "world_model_state_dict" in checkpoint:
+                state_dict = checkpoint["world_model_state_dict"]
+                logger.info(f"Loaded world model from full checkpoint {world_model_path} (epoch {checkpoint.get('epoch', '?')})")
+            else:
+                state_dict = checkpoint
+                logger.info(f"Loaded world model from {world_model_path}")
+            self.world_model.load_state_dict(state_dict)
         else:
             logger.warning(f"World model not found at {world_model_path}, using random init")
         
@@ -493,6 +598,10 @@ class PolicyTrainer:
             # Move to device
             rgb = rgb.to(self.device)
             actions = actions.to(self.device)
+            
+            # Apply image augmentation for regularization
+            if self.augmentation is not None:
+                rgb = self.augmentation(rgb)
             
             # Encode states
             with torch.no_grad():
@@ -942,6 +1051,10 @@ class PolicyTrainer:
             "wandb_run_id": wandb.run.id if wandb.run else None,
         }
         
+        # Save early stopping state if enabled
+        if self.early_stopping is not None:
+            checkpoint["early_stopping_state"] = self.early_stopping.state_dict()
+        
         torch.save(checkpoint, self.ckpt_dir / "latest.pt")
         
         if self.epoch % self.cfg.training.phase2.save_every == 0:
@@ -964,6 +1077,11 @@ class PolicyTrainer:
         self.epoch = checkpoint["epoch"]
         self.global_step = checkpoint["global_step"]
         self.best_loss = checkpoint["best_loss"]
+        
+        # Restore early stopping state if present
+        if self.early_stopping is not None and "early_stopping_state" in checkpoint:
+            self.early_stopping.load_state_dict(checkpoint["early_stopping_state"])
+            logger.info(f"Restored early stopping: best={self.early_stopping.best_value:.4f} at epoch {self.early_stopping.best_epoch}")
         
         logger.info(f"Loaded checkpoint from epoch {self.epoch}")
 
@@ -1012,6 +1130,13 @@ class PolicyTrainer:
                         f"Val CFM={val_metrics['cfm_loss']:.4f}, "
                         f"MSE={val_metrics['action_mse']:.4f}"
                     )
+                    
+                    # Early stopping check (based on validation loss)
+                    if self.early_stopping is not None:
+                        if self.early_stopping(val_metrics["cfm_loss"], epoch):
+                            logger.info(f"⚠ Early stopping at epoch {epoch}!")
+                            logger.info(f"  Best val loss: {self.early_stopping.best_value:.4f} at epoch {self.early_stopping.best_epoch}")
+                            break
         
         if self.is_main:
             logger.info("Phase 2 training complete!")

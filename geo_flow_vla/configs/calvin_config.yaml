@@ -112,6 +112,9 @@ training:
     warmup_steps: 2000
     gradient_clip: 1.0
     
+    # World model checkpoint
+    world_model_path: null    # Path to world model; null = auto-detect from checkpoint.dir/phase1/
+    
     # CPR parameters
     cpr_lambda_start: 0.0     # Initial CPR weight
     cpr_lambda_end: 0.1       # Final CPR weight
@@ -133,12 +136,20 @@ augmentation:
   enabled: true
   
   # SE(3) augmentation
-  rotation_range: 0.0         # 0 = full SO(3), >0 = limited z-rotation (rad)
-  translation_range: 0.1      # Translation range in meters
+  rotation_range: 0.15        # Enable rotation augmentation (radians)
+  translation_range: 0.15     # Translation range in meters (increased)
   
-  # Additional augmentations
-  color_jitter: false
-  random_crop: false
+  # Color jitter augmentation
+  color_jitter: true          # Enable color augmentation
+  color_jitter_brightness: 0.2
+  color_jitter_contrast: 0.2
+  color_jitter_saturation: 0.2
+  color_jitter_hue: 0.05
+  
+  # Random crop augmentation
+  random_crop: true           # Enable random crop
+  crop_scale_min: 0.85        # Minimum crop scale
+  crop_scale_max: 1.0         # Maximum crop scale
 
 # ============================================================================
 # Logging and Checkpointing
@@ -167,7 +178,7 @@ logging:
 # Checkpointing
 # ============================================================================
 checkpoint:
-  dir: "./checkpoints/calvin/${data.calvin_env}/"
+  dir: "./checkpoints/calvin/original+aug/${data.calvin_env}/"
   resume: null                # Path to checkpoint to resume from
   save_best: true             # Save best model based on eval metric
   keep_last: 3                # Keep last N checkpoints
