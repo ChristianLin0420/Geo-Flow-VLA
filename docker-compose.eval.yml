@@ -1,0 +1,129 @@
+# docker-compose.eval.yml - Geo-Flow VLA Evaluation
+# Usage:
+#   docker-compose -f docker-compose.eval.yml run eval-libero
+#   docker-compose -f docker-compose.eval.yml run eval-calvin
+#   docker-compose -f docker-compose.eval.yml run eval-rlbench
+#   docker-compose -f docker-compose.eval.yml run eval bash  # Interactive
+
+version: "3.8"
+
+services:
+  # Base evaluation service
+  eval:
+    build:
+      context: .
+      dockerfile: Dockerfile.eval
+    image: geo-flow-vla-eval:latest
+    container_name: geoflow-eval
+    
+    # GPU support
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    
+    # Mount volumes
+    volumes:
+      - ./data:/workspace/Geo-Flow-VLA/data:ro
+      - ./checkpoints:/workspace/Geo-Flow-VLA/checkpoints:ro
+      - ./outputs:/workspace/Geo-Flow-VLA/outputs
+      - ./logs:/workspace/Geo-Flow-VLA/logs
+    
+    # Environment
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - WANDB_API_KEY=${WANDB_API_KEY:-}
+      - DISPLAY=:99
+    
+    # Shared memory for PyTorch DataLoader
+    shm_size: "16gb"
+    
+    # Keep container running
+    stdin_open: true
+    tty: true
+    
+    working_dir: /workspace/Geo-Flow-VLA
+    
+    # Default: interactive shell
+    command: /bin/bash
+
+  # ==========================================================================
+  # LIBERO Evaluation
+  # ==========================================================================
+  eval-libero:
+    extends: eval
+    container_name: geoflow-eval-libero
+    command: >
+      python -m geo_flow_vla.eval.eval_libero
+      --checkpoint ./checkpoints/libero/full
+      --suite libero_10
+      --n_rollouts 50
+      --max_steps 400
+
+  eval-libero-spatial:
+    extends: eval
+    container_name: geoflow-eval-libero-spatial
+    command: >
+      python -m geo_flow_vla.eval.eval_libero
+      --checkpoint ./checkpoints/libero/full
+      --suite libero_spatial
+      --n_rollouts 50
+      --max_steps 400
+
+  eval-libero-object:
+    extends: eval
+    container_name: geoflow-eval-libero-object
+    command: >
+      python -m geo_flow_vla.eval.eval_libero
+      --checkpoint ./checkpoints/libero/full
+      --suite libero_object
+      --n_rollouts 50
+      --max_steps 400
+
+  eval-libero-goal:
+    extends: eval
+    container_name: geoflow-eval-libero-goal
+    command: >
+      python -m geo_flow_vla.eval.eval_libero
+      --checkpoint ./checkpoints/libero/full
+      --suite libero_goal
+      --n_rollouts 50
+      --max_steps 400
+
+  # ==========================================================================
+  # CALVIN Evaluation
+  # ==========================================================================
+  eval-calvin:
+    extends: eval
+    container_name: geoflow-eval-calvin
+    command: >
+      python -m geo_flow_vla.eval.eval_calvin
+      --checkpoint ./checkpoints/calvin/abc
+      --split D
+      --n_chains 100
+
+  eval-calvin-abc:
+    extends: eval
+    container_name: geoflow-eval-calvin-abc
+    command: >
+      python -m geo_flow_vla.eval.eval_calvin
+      --checkpoint ./checkpoints/calvin/abc
+      --split ABC
+      --n_chains 100
+
+  # ==========================================================================
+  # RLBench Evaluation
+  # ==========================================================================
+  eval-rlbench:
+    extends: eval
+    container_name: geoflow-eval-rlbench
+    command: >
+      python -m geo_flow_vla.eval.eval_rlbench
+      --checkpoint ./checkpoints/rlbench/all
+      --category all
+      --n_rollouts 25
+      --max_steps 200
+

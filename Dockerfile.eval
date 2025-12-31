@@ -1,0 +1,285 @@
+# =============================================================================
+# Geo-Flow VLA Evaluation Docker Image
+# Supports: LIBERO (MuJoCo), CALVIN (PyBullet), RLBench (CoppeliaSim)
+# =============================================================================
+
+FROM pytorch/pytorch:2.4.0-cuda12.4-cudnn9-devel
+
+LABEL maintainer="Geo-Flow VLA Team"
+LABEL description="Geo-Flow VLA Evaluation: LIBERO, CALVIN, RLBench benchmarks"
+
+# =============================================================================
+# Environment Variables
+# =============================================================================
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=${CUDA_HOME}/bin:${PATH}
+ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
+ENV TOKENIZERS_PARALLELISM=false
+
+# Headless rendering (EGL for MuJoCo/robosuite)
+ENV PYOPENGL_PLATFORM=egl
+ENV MUJOCO_GL=egl
+ENV NVIDIA_DRIVER_CAPABILITIES=all
+ENV NVIDIA_VISIBLE_DEVICES=all
+
+# EGL configuration for headless GPU rendering
+ENV EGL_DEVICE_ID=0
+ENV __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
+ENV __GLX_VENDOR_LIBRARY_NAME=nvidia
+
+# CoppeliaSim (RLBench)
+ENV COPPELIASIM_ROOT=/opt/CoppeliaSim
+ENV QT_QPA_PLATFORM_PLUGIN_PATH=${COPPELIASIM_ROOT}
+
+WORKDIR /workspace
+
+# =============================================================================
+# System Dependencies
+# =============================================================================
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git wget curl vim unzip build-essential cmake \
+    # Graphics/Rendering (Mesa + NVIDIA EGL)
+    libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1 \
+    libegl1-mesa libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev \
+    libglvnd0 libglvnd-dev libglew-dev \
+    libnvidia-egl-wayland1 \
+    # Video encoding
+    ffmpeg \
+    # HDF5 (datasets)
+    libhdf5-dev \
+    # Qt (CoppeliaSim)
+    qtbase5-dev libqt5opengl5-dev libqt5x11extras5 \
+    # X11 (headless display)
+    xvfb x11-utils \
+    # Additional libraries
+    libxcb-xinerama0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+    libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xfixes0 \
+    libxkbcommon-x11-0 patchelf \
+    && rm -rf /var/lib/apt/lists/* \
+    # Create NVIDIA EGL vendor config if missing
+    && mkdir -p /usr/share/glvnd/egl_vendor.d \
+    && echo '{"file_format_version" : "1.0.0", "ICD" : {"library_path" : "libEGL_nvidia.so.0"}}' \
+       > /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+
+# =============================================================================
+# Upgrade pip
+# =============================================================================
+RUN pip install --upgrade pip setuptools wheel
+
+# =============================================================================
+# Core Python Dependencies
+# =============================================================================
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Vision models
+RUN pip install --no-cache-dir \
+    transformers>=4.40.0 \
+    accelerate>=0.30.0 \
+    safetensors>=0.4.0 \
+    huggingface_hub>=0.23.0
+
+# MoGe-2
+RUN pip install --no-cache-dir git+https://github.com/microsoft/MoGe.git || \
+    echo "Warning: MoGe installation failed"
+
+# Imageio for video saving
+RUN pip install --no-cache-dir imageio imageio-ffmpeg
+
+# =============================================================================
+# LIBERO Benchmark
+# =============================================================================
+# Note: gym==0.21.0 is broken with modern pip. Use gymnasium + shimmy instead.
+RUN pip install --no-cache-dir \
+    gymnasium \
+    shimmy>=0.2.0 \
+    robosuite==1.4.1 \
+    mujoco>=2.3.0 \
+    bddl \
+    robomimic \
+    easydict \
+    cloudpickle
+
+# Install LIBERO with nested structure fix
+RUN git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git /tmp/LIBERO && \
+    touch /tmp/LIBERO/libero/__init__.py && \
+    pip install -e /tmp/LIBERO && \
+    # Fix PyTorch 2.6+ weights_only issue
+    sed -i 's/torch.load(init_states_path)/torch.load(init_states_path, weights_only=False)/g' /tmp/LIBERO/libero/benchmark/__init__.py || true
+
+# Set LIBERO data folder via environment (skip interactive prompts)
+ENV LIBERO_FOLDER=/workspace/Geo-Flow-VLA/data/libero
+
+# Patch LIBERO __init__.py to skip ALL interactive prompts
+# Replace the entire init file with a non-interactive version that exports required functions
+# Key: Point init_states and bddl_files to the bundled files in the LIBERO repo
+RUN python << 'EOF'
+import os
+
+init_path = '/tmp/LIBERO/libero/libero/__init__.py'
+
+# Create patched version that skips interactive prompts but keeps required exports
+# The bundled init_files and bddl_files are in /tmp/LIBERO/libero/libero/
+patched = '''"""LIBERO library - Patched for non-interactive Docker usage."""
+import os
+from pathlib import Path
+
+# LIBERO bundled assets location (where init_files and bddl_files are)
+LIBERO_ASSETS_ROOT = "/tmp/LIBERO/libero/libero"
+
+# User data folder (for datasets, outputs)
+LIBERO_FOLDER = os.environ.get("LIBERO_FOLDER", "/workspace/Geo-Flow-VLA/data/libero")
+os.environ["LIBERO_FOLDER"] = LIBERO_FOLDER
+
+# Create user directories if needed
+Path(LIBERO_FOLDER).mkdir(parents=True, exist_ok=True)
+
+# Required function: get_libero_path
+def get_libero_path(sub_path=""):
+    """Get path within LIBERO folder.
+    
+    For bundled assets (init_states, bddl_files), use the LIBERO repo.
+    For user data (datasets), use the configured LIBERO_FOLDER.
+    """
+    # Map init_states to bundled init_files
+    if sub_path == "init_states":
+        return os.path.join(LIBERO_ASSETS_ROOT, "init_files")
+    
+    # Map bddl_files to bundled bddl_files
+    if sub_path == "bddl_files":
+        return os.path.join(LIBERO_ASSETS_ROOT, "bddl_files")
+    
+    # Everything else uses user folder
+    base = os.environ.get("LIBERO_FOLDER", "/workspace/Geo-Flow-VLA/data/libero")
+    if sub_path:
+        return os.path.join(base, sub_path)
+    return base
+
+# Required function: set_libero_path  
+def set_libero_path(path):
+    """Set LIBERO folder path."""
+    os.environ["LIBERO_FOLDER"] = path
+    Path(path).mkdir(parents=True, exist_ok=True)
+
+# Store paths for library use
+benchmark_root = get_libero_path("benchmark")
+dataset_root = get_libero_path("datasets")
+
+# Create subdirectories
+Path(dataset_root).mkdir(parents=True, exist_ok=True)
+'''
+
+with open(init_path, 'w') as f:
+    f.write(patched)
+
+print('✓ Patched LIBERO __init__.py - init_states → /tmp/LIBERO/libero/libero/init_files')
+EOF
+
+# Setup robosuite macros
+RUN python -c "import robosuite; from robosuite.scripts.setup_macros import setup; setup()" || true
+
+# =============================================================================
+# CALVIN Benchmark
+# =============================================================================
+RUN pip install --no-cache-dir \
+    pybullet \
+    numpy-quaternion \
+    hydra-colorlog
+
+RUN git clone --recursive https://github.com/mees/calvin.git /tmp/calvin && \
+    pip install -e /tmp/calvin/calvin_env || \
+    echo "Warning: CALVIN installation failed"
+
+# =============================================================================
+# RLBench Benchmark (CoppeliaSim + PyRep)
+# =============================================================================
+ARG COPPELIASIM_VERSION=4.5.0
+RUN cd /opt && \
+    wget -q https://www.coppeliarobotics.com/files/V${COPPELIASIM_VERSION}/CoppeliaSim_Edu_V${COPPELIASIM_VERSION}_Ubuntu22_04.tar.xz \
+    -O CoppeliaSim.tar.xz && \
+    tar -xJf CoppeliaSim.tar.xz && \
+    mv CoppeliaSim_Edu_V${COPPELIASIM_VERSION}_Ubuntu22_04 CoppeliaSim && \
+    rm CoppeliaSim.tar.xz || \
+    echo "Warning: CoppeliaSim installation failed"
+
+# Update LD_LIBRARY_PATH for CoppeliaSim
+ENV LD_LIBRARY_PATH=${COPPELIASIM_ROOT}:${LD_LIBRARY_PATH}
+
+RUN pip install --no-cache-dir cffi && \
+    git clone https://github.com/stepjam/PyRep.git /tmp/PyRep && \
+    cd /tmp/PyRep && pip install -e . || \
+    echo "Warning: PyRep installation failed"
+
+RUN git clone https://github.com/stepjam/RLBench.git /tmp/RLBench && \
+    cd /tmp/RLBench && pip install -e . || \
+    echo "Warning: RLBench installation failed"
+
+# =============================================================================
+# Copy and Install Geo-Flow VLA
+# =============================================================================
+COPY . /workspace/Geo-Flow-VLA/
+WORKDIR /workspace/Geo-Flow-VLA
+RUN pip install -e .
+
+# WandB
+RUN pip install --no-cache-dir 'wandb[media]'
+
+# =============================================================================
+# Create Directories
+# =============================================================================
+RUN mkdir -p \
+    /workspace/Geo-Flow-VLA/data/libero \
+    /workspace/Geo-Flow-VLA/data/rlbench \
+    /workspace/Geo-Flow-VLA/data/calvin \
+    /workspace/Geo-Flow-VLA/checkpoints \
+    /workspace/Geo-Flow-VLA/outputs/videos
+
+# =============================================================================
+# Fix torch/torchvision versions (MUST be after all pip installs)
+# =============================================================================
+RUN pip install --no-cache-dir --force-reinstall \
+    torch==2.4.0 torchvision==0.19.0 \
+    --index-url https://download.pytorch.org/whl/cu124
+
+# Reinstall compatible xFormers (0.0.28+ works with PyTorch 2.4.0)
+RUN pip uninstall -y xformers || true && \
+    pip install --no-cache-dir xformers==0.0.28.post1 \
+    --index-url https://download.pytorch.org/whl/cu124 || \
+    echo "Warning: xFormers installation failed"
+
+# =============================================================================
+# Pre-download Vision Models
+# =============================================================================
+ENV PYTHONPATH=/workspace/Geo-Flow-VLA
+
+RUN python -c "import torch; torch.hub.load('facebookresearch/dinov2', 'dinov2_vitg14')" || \
+    echo "Warning: DINOv2 pre-download failed"
+
+RUN python -c "from huggingface_hub import hf_hub_download; hf_hub_download('Ruicheng/moge-2-vitl-normal', 'model.pt')" || \
+    echo "Warning: MoGe-2 pre-download failed"
+
+# =============================================================================
+# Verification
+# =============================================================================
+RUN python -c "import torch; print(f'✓ PyTorch: {torch.__version__}')" && \
+    python -c "import robosuite; print('✓ LIBERO/robosuite OK')" && \
+    python -c "import pybullet; print('✓ CALVIN/pybullet OK')" && \
+    python -c "from geo_flow_vla.eval.policy_wrapper import GeoFlowVLAPolicy; print('✓ GeoFlowVLAPolicy OK')" || \
+    echo "Some verifications failed"
+
+# =============================================================================
+# Entrypoint (headless display)
+# =============================================================================
+RUN echo '#!/bin/bash\n\
+if [ -z "$DISPLAY" ]; then\n\
+    export DISPLAY=:99\n\
+    Xvfb :99 -screen 0 1024x768x24 &\n\
+    sleep 1\n\
+fi\n\
+exec "$@"\n' > /entrypoint.sh && chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/bin/bash"]
+
