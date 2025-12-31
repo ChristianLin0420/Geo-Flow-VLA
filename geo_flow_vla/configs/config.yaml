@@ -113,7 +113,7 @@ training:
     gradient_clip: 1.0
     
     # World model checkpoint
-    world_model_path: null    # Path to world model; null = auto-detect from checkpoint.dir/phase1/
+    world_model_path: "./checkpoints/libero/original/full/phase1/latest.pt"    # Path to world model; null = auto-detect from checkpoint.dir/phase1/
     
     # CPR parameters
     cpr_lambda_start: 0.0     # Initial CPR weight
