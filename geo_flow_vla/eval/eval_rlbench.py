@@ -26,40 +26,53 @@ from .base_evaluator import BaseEvaluator
 
 logger = logging.getLogger(__name__)
 
-# 18 tasks from RLBench benchmark
+# 18 tasks from RLBench-18-Tasks HuggingFace dataset (MUST match rlbench_dataset.py)
 RLBENCH_18_TASKS = [
-    "reach_target",
-    "take_lid_off_saucepan",
-    "put_item_in_drawer",
-    "place_wine_at_rack_location",
-    "pick_up_cup",
-    "stack_wine",
-    "place_cups",
-    "put_knife_on_chopping_board",
-    "take_umbrella_out_of_umbrella_stand",
-    "push_buttons",
-    "pick_and_lift",
-    "stack_blocks",
-    "sweep_to_dustpan_of_size",
-    "light_bulb_in",
-    "put_groceries_in_cupboard",
     "close_jar",
-    "slide_block_to_color_target",
+    "insert_onto_square_peg",
+    "light_bulb_in",
     "meat_off_grill",
+    "open_drawer",
+    "place_cups",
+    "place_shape_in_shape_sorter",
+    "place_wine_at_rack_location",
+    "push_buttons",
+    "put_groceries_in_cupboard",
+    "put_item_in_drawer",
+    "put_money_in_safe",
+    "reach_and_drag",
+    "slide_block_to_color_target",
+    "stack_blocks",
+    "stack_cups",
+    "sweep_to_dustpan_of_size",
+    "turn_tap",
 ]
 
-# Task categories
+# Task categories (matches rlbench_dataset.py and rlbench_config.yaml)
 RLBENCH_TASK_CATEGORIES = {
-    "easy": ["reach_target", "pick_up_cup", "push_buttons", "pick_and_lift"],
+    "easy": [
+        "close_jar",
+        "light_bulb_in",
+        "open_drawer",
+        "push_buttons",
+        "put_money_in_safe",
+        "turn_tap",
+    ],
     "medium": [
-        "take_lid_off_saucepan", "put_item_in_drawer", "stack_wine",
-        "put_knife_on_chopping_board", "stack_blocks", "close_jar",
-        "slide_block_to_color_target", "meat_off_grill",
+        "insert_onto_square_peg",
+        "meat_off_grill",
+        "place_cups",
+        "put_groceries_in_cupboard",
+        "stack_blocks",
+        "stack_cups",
     ],
     "hard": [
-        "place_wine_at_rack_location", "place_cups", 
-        "take_umbrella_out_of_umbrella_stand", "sweep_to_dustpan_of_size",
-        "light_bulb_in", "put_groceries_in_cupboard",
+        "place_shape_in_shape_sorter",
+        "place_wine_at_rack_location",
+        "put_item_in_drawer",
+        "reach_and_drag",
+        "slide_block_to_color_target",
+        "sweep_to_dustpan_of_size",
     ],
 }
 
@@ -125,6 +138,7 @@ class RLBenchEvaluator(BaseEvaluator):
             obs_config.set_all(True)  # Enable all cameras
             
             # Configure action mode: 7DoF EE pose + gripper
+            # Use EndEffectorPoseViaPlanning for absolute pose control
             action_mode = MoveArmThenGripper(
                 arm_action_mode=EndEffectorPoseViaPlanning(),
                 gripper_action_mode=Discrete(),
@@ -189,12 +203,19 @@ class RLBenchEvaluator(BaseEvaluator):
             
             total_reward = 0
             success = False
+            step = 0
+            consecutive_failures = 0
+            max_consecutive_failures = 5  # Allow some path planning failures
             
             for step in range(self.max_steps):
                 # Get RGB from specified camera
                 rgb = getattr(obs, self.camera, None)
                 if rgb is None:
                     rgb = obs.front_rgb  # Fallback
+                
+                # Capture frame for video BEFORE action (so we see all steps)
+                if self.save_videos:
+                    video_frames.append(rgb.copy())
                 
                 # Get proprioception: gripper_pose (7) + gripper_open (1) = 8D
                 proprio = np.concatenate([
@@ -214,21 +235,57 @@ class RLBenchEvaluator(BaseEvaluator):
                 if len(action) < 8:
                     # Pad with zeros if needed
                     action = np.concatenate([action, np.zeros(8 - len(action))])
-                action = action[:8]
+                action = action[:8].copy()
                 
-                # Execute action
-                obs, reward, terminate = task.step(action)
-                total_reward += reward
+                # Get current EE pose for reference (used as fallback)
+                current_quat = obs.gripper_pose[3:7]
                 
-                if self.save_videos:
-                    video_frames.append(rgb.copy())
+                # Normalize quaternion to unit quaternion (CRITICAL - RLBench requires this)
+                quat = action[3:7]
+                quat_norm = np.linalg.norm(quat)
+                if quat_norm > 1e-6:
+                    action[3:7] = quat / quat_norm
+                else:
+                    # Keep current rotation if quaternion is invalid
+                    action[3:7] = current_quat
                 
-                if terminate:
-                    success = reward > 0  # RLBench: reward > 0 means success
-                    break
+                # Clip gripper to valid range
+                action[7] = np.clip(action[7], 0.0, 1.0)
+                
+                # Try to execute action with error recovery
+                try:
+                    obs, reward, terminate = task.step(action)
+                    total_reward += reward
+                    consecutive_failures = 0  # Reset on success
+                    
+                    if terminate:
+                        success = reward > 0  # RLBench: reward > 0 means success
+                        break
+                        
+                except Exception as step_error:
+                    # Path planning can fail for some target poses
+                    consecutive_failures += 1
+                    error_msg = str(step_error)
+                    
+                    # CRITICAL: Clear action buffer on failure!
+                    # The buffered actions were predicted assuming this action succeeded.
+                    # Since it failed, the robot hasn't moved, so we need fresh predictions.
+                    self.policy.reset()
+                    
+                    if consecutive_failures >= max_consecutive_failures:
+                        logger.warning(f"Step {step}: Too many consecutive failures, ending episode")
+                        break
+                    
+                    # Log but continue - some failures are recoverable
+                    if "path could not be found" in error_msg.lower():
+                        logger.debug(f"Step {step}: Path planning failed, will re-predict...")
+                    elif "quaternion" in error_msg.lower():
+                        logger.debug(f"Step {step}: Quaternion error, will re-predict...")
+                    else:
+                        logger.warning(f"Step {step}: {error_msg[:60]}, will re-predict...")
             
         except Exception as e:
-            logger.error(f"Episode failed: {e}")
+            logger.error(f"Episode failed during reset: {e}")
             success = False
             step = 0
             total_reward = 0
@@ -277,7 +334,7 @@ def main():
                         help="Task category to evaluate")
     parser.add_argument("--n_rollouts", type=int, default=25,
                         help="Number of rollouts per task")
-    parser.add_argument("--max_steps", type=int, default=200,
+    parser.add_argument("--max_steps", type=int, default=500,
                         help="Maximum steps per episode")
     parser.add_argument("--camera", type=str, default="front_rgb",
                         help="Camera view to use")

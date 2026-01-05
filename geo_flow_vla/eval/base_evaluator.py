@@ -317,9 +317,9 @@ class BaseEvaluator(ABC):
         
         try:
             import imageio
-            # Flip frames vertically for correct orientation in saved video
-            flipped_frames = [np.flipud(frame) for frame in frames]
-            imageio.mimsave(str(video_path), flipped_frames, fps=30)
+            # Use lower fps (10) for realistic playback speed
+            # CoppeliaSim images are already in correct orientation
+            imageio.mimsave(str(video_path), frames, fps=10)
             logger.info(f"Saved video: {video_path}")
             
             if self.log_wandb:

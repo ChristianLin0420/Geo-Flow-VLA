@@ -376,6 +376,12 @@ python -m geo_flow_vla.eval.eval_libero \
 #### RLBench Evaluation
 
 ```bash
+export DISPLAY=:99
+export QT_QPA_PLATFORM=xcb
+export CUDA_VISIBLE_DEVICES=0
+export __NV_PRIME_RENDER_OFFLOAD=1
+export __GLX_VENDOR_LIBRARY_NAME=nvidia
+
 # Explicit paths (recommended)
 python -m geo_flow_vla.eval.eval_rlbench \
     --world_model_path ./checkpoints/phase1/world_model.pth \
