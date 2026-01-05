@@ -4,7 +4,14 @@ RLBench-18 Benchmark Evaluation.
 Evaluates on 18 RLBench tasks using CoppeliaSim (headless).
 Requires: pyrep, rlbench, CoppeliaSim installation.
 
-Usage:
+Usage (explicit paths - recommended):
+    python -m geo_flow_vla.eval.eval_rlbench \
+        --world_model_path ./checkpoints/phase1/world_model.pth \
+        --policy_path ./checkpoints/phase2/best.pt \
+        --category all \
+        --n_rollouts 25
+
+Usage (legacy checkpoint directory):
     python -m geo_flow_vla.eval.eval_rlbench \
         --checkpoint ./checkpoints/rlbench/all \
         --n_rollouts 25 \
@@ -151,15 +158,17 @@ class RLBenchEvaluator(BaseEvaluator):
     
     def _get_task_class(self, task_name: str):
         """Get RLBench task class from name."""
-        from rlbench.tasks import get_task
+        import importlib
         
         # Convert snake_case to CamelCase
         class_name = "".join(word.title() for word in task_name.split("_"))
         
         try:
-            return get_task(class_name)
-        except Exception:
-            raise ValueError(f"Unknown task: {task_name} (tried class: {class_name})")
+            # Import the task module dynamically
+            module = importlib.import_module(f"rlbench.tasks.{task_name}")
+            return getattr(module, class_name)
+        except (ImportError, AttributeError) as e:
+            raise ValueError(f"Unknown task: {task_name} (tried class: {class_name}): {e}")
     
     def run_episode(
         self,
@@ -248,8 +257,17 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="RLBench Benchmark Evaluation")
-    parser.add_argument("--checkpoint", type=str, required=True,
-                        help="Path to checkpoint directory")
+    
+    # New explicit checkpoint arguments (recommended)
+    parser.add_argument("--world_model_path", type=str, default=None,
+                        help="Direct path to world model checkpoint (e.g., checkpoints/phase1/world_model.pth)")
+    parser.add_argument("--policy_path", type=str, default=None,
+                        help="Direct path to policy checkpoint (e.g., checkpoints/phase2/best.pt)")
+    
+    # Legacy argument (deprecated but supported for backward compatibility)
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="[DEPRECATED] Path to checkpoint directory with phase1/phase2 structure")
+    
     parser.add_argument("--config", type=str, default=None,
                         help="Path to config yaml (optional)")
     parser.add_argument("--tasks", type=str, nargs="+", default=None,
@@ -275,8 +293,14 @@ def main():
                         help="Save rollout videos")
     parser.add_argument("--output_dir", type=str, default="./eval_results/rlbench",
                         help="Output directory for results")
+    parser.add_argument("--run_name", type=str, default=None,
+                        help="Custom wandb run name (default: auto-generated)")
     
     args = parser.parse_args()
+    
+    # Validate arguments - must provide either explicit paths or legacy checkpoint_dir
+    if not (args.world_model_path and args.policy_path) and not args.checkpoint:
+        parser.error("Must provide either (--world_model_path and --policy_path) or --checkpoint")
     
     # Setup logging
     logging.basicConfig(
@@ -289,6 +313,8 @@ def main():
         task_category=args.category,
         headless=not args.no_headless,
         camera=args.camera,
+        world_model_path=args.world_model_path,
+        policy_path=args.policy_path,
         checkpoint_dir=args.checkpoint,
         config_path=args.config,
         device=args.device,
@@ -298,6 +324,7 @@ def main():
         log_wandb=not args.no_wandb,
         save_videos=args.save_videos,
         output_dir=args.output_dir,
+        run_name=args.run_name,
     )
     
     evaluator.setup_environment()

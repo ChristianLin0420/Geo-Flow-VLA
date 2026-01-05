@@ -4,7 +4,14 @@ LIBERO Benchmark Evaluation.
 Evaluates on LIBERO task suites using MuJoCo simulation.
 Suites: libero_10, libero_90, libero_spatial, libero_object, libero_goal
 
-Usage:
+Usage (explicit paths - recommended):
+    python -m geo_flow_vla.eval.eval_libero \
+        --world_model_path ./checkpoints/phase1/world_model.pth \
+        --policy_path ./checkpoints/phase2/best.pt \
+        --suite libero_10 \
+        --n_rollouts 50
+
+Usage (legacy checkpoint directory):
     python -m geo_flow_vla.eval.eval_libero \
         --checkpoint ./checkpoints/libero/full \
         --suite libero_10 \
@@ -56,6 +63,11 @@ class LIBEROEvaluator(BaseEvaluator):
         self.benchmark = None
         self.task_descriptions = None
         
+        # Cache for reusing environments (avoids EGL context leaks)
+        self._current_env = None
+        self._current_task_idx = None
+        self._env_creation_failed = False
+        
         super().__init__(**kwargs)
         
     @property
@@ -102,37 +114,77 @@ class LIBEROEvaluator(BaseEvaluator):
             self.setup_environment()
         return self.benchmark.get_task_names()
     
-    def _create_env(self, task_idx: int):
-        """Create environment for a specific task using LIBERO benchmark API."""
-        from libero.libero.envs import OffScreenRenderEnv
-        from libero.libero import get_libero_path
+    def _get_or_create_env(self, task_idx: int):
+        """Get cached environment or create new one for a specific task.
         
-        # Get task from benchmark
-        task = self.benchmark.get_task(task_idx)
+        Reuses environments to avoid EGL context leaks.
+        Returns None if environment creation fails (EGL exhausted).
+        """
+        # If we already have an env for this task, reuse it
+        if self._current_env is not None and self._current_task_idx == task_idx:
+            return self._current_env
         
-        # Get BDDL file path - need full path
-        bddl_files_path = get_libero_path("bddl_files")
-        bddl_file = os.path.join(bddl_files_path, task.problem_folder, task.bddl_file)
+        # Check if we've already failed to create an env (EGL exhausted)
+        if hasattr(self, '_env_creation_failed') and self._env_creation_failed:
+            return None
         
-        # Get init states
-        init_states = self.benchmark.get_task_init_states(task_idx)
+        # Close previous environment to free resources
+        self._close_current_env()
         
-        env = OffScreenRenderEnv(
-            bddl_file_name=bddl_file,
-            has_renderer=False,
-            has_offscreen_renderer=True,
-            ignore_done=True,
-            use_camera_obs=True,
-            camera_names=["agentview"],
-            camera_heights=[128],
-            camera_widths=[128],
-            reward_shaping=False,
-        )
+        try:
+            from libero.libero.envs import OffScreenRenderEnv
+            from libero.libero import get_libero_path
+            
+            # Get task from benchmark
+            task = self.benchmark.get_task(task_idx)
+            
+            # Get BDDL file path - need full path
+            bddl_files_path = get_libero_path("bddl_files")
+            bddl_file = os.path.join(bddl_files_path, task.problem_folder, task.bddl_file)
+            
+            # Get init states
+            init_states = self.benchmark.get_task_init_states(task_idx)
+            
+            env = OffScreenRenderEnv(
+                bddl_file_name=bddl_file,
+                has_renderer=False,
+                has_offscreen_renderer=True,
+                ignore_done=True,
+                use_camera_obs=True,
+                camera_names=["agentview"],
+                camera_heights=[128],
+                camera_widths=[128],
+                reward_shaping=False,
+            )
+            
+            # Store init states for resetting
+            env._init_states = init_states
+            
+            # Cache the environment
+            self._current_env = env
+            self._current_task_idx = task_idx
+            
+            return env
+            
+        except Exception as e:
+            logger.error(f"Failed to create environment (EGL exhausted?): {e}")
+            self._env_creation_failed = True
+            return None
+    
+    def _close_current_env(self):
+        """Close current environment and force garbage collection."""
+        import gc
         
-        # Store init states for resetting
-        env._init_states = init_states
-        
-        return env
+        if self._current_env is not None:
+            try:
+                self._current_env.close()
+            except Exception as e:
+                logger.debug(f"Error closing env: {e}")
+            self._current_env = None
+            self._current_task_idx = None
+            
+            # Force garbage collection to free EGL resources
+            gc.collect()
     
     def run_episode(
         self,
@@ -146,8 +198,17 @@ class LIBEROEvaluator(BaseEvaluator):
         
         video_frames = [] if self.save_videos else None
         
-        # Create environment for this task
-        env = self._create_env(task_idx)
+        # Get or create environment for this task (reuses existing if same task)
+        env = self._get_or_create_env(task_idx)
+        
+        # If env creation failed (EGL exhausted), skip this episode
+        if env is None:
+            return {
+                "success": False,
+                "steps": 0,
+                "reward": 0,
+                "error": "Environment creation failed (EGL exhausted)",
+            }
         
         try:
             # Reset with init state if available
@@ -209,14 +270,11 @@ class LIBEROEvaluator(BaseEvaluator):
             
         except Exception as e:
             logger.error(f"Episode failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
             success = False
             step = 0
             total_reward = 0
-            
-        finally:
-            env.close()
+            # Don't close env on errors - keep it alive for retry
+            # Closing triggers EGL context recreation which causes exhaustion
         
         # Save video if requested
         if self.save_videos and video_frames:
@@ -246,14 +304,27 @@ class LIBEROEvaluator(BaseEvaluator):
         if proprio_parts:
             return np.concatenate(proprio_parts)
         return np.zeros(8)
+    
+    def __del__(self):
+        """Clean up environment on deletion."""
+        self._close_current_env()
 
 
 def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="LIBERO Benchmark Evaluation")
-    parser.add_argument("--checkpoint", type=str, required=True,
-                        help="Path to checkpoint directory")
+    
+    # New explicit checkpoint arguments (recommended)
+    parser.add_argument("--world_model_path", type=str, default=None,
+                        help="Direct path to world model checkpoint (e.g., checkpoints/phase1/world_model.pth)")
+    parser.add_argument("--policy_path", type=str, default=None,
+                        help="Direct path to policy checkpoint (e.g., checkpoints/phase2/best.pt)")
+    
+    # Legacy argument (deprecated but supported for backward compatibility)
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="[DEPRECATED] Path to checkpoint directory with phase1/phase2 structure")
+    
     parser.add_argument("--config", type=str, default=None,
                         help="Path to config yaml (optional)")
     parser.add_argument("--suite", type=str, default="libero_10",
@@ -273,8 +344,14 @@ def main():
                         help="Save rollout videos")
     parser.add_argument("--output_dir", type=str, default="./eval_results/libero",
                         help="Output directory for results")
+    parser.add_argument("--run_name", type=str, default=None,
+                        help="Custom wandb run name (default: auto-generated)")
     
     args = parser.parse_args()
+    
+    # Validate arguments - must provide either explicit paths or legacy checkpoint_dir
+    if not (args.world_model_path and args.policy_path) and not args.checkpoint:
+        parser.error("Must provide either (--world_model_path and --policy_path) or --checkpoint")
     
     # Setup logging
     logging.basicConfig(
@@ -284,6 +361,8 @@ def main():
     
     evaluator = LIBEROEvaluator(
         task_suite=args.suite,
+        world_model_path=args.world_model_path,
+        policy_path=args.policy_path,
         checkpoint_dir=args.checkpoint,
         config_path=args.config,
         device=args.device,
@@ -293,6 +372,7 @@ def main():
         log_wandb=not args.no_wandb,
         save_videos=args.save_videos,
         output_dir=args.output_dir,
+        run_name=args.run_name,
     )
     
     evaluator.setup_environment()

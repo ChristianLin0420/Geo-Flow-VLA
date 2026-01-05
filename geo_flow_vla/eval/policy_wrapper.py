@@ -29,7 +29,9 @@ class GeoFlowVLAPolicy:
     
     def __init__(
         self,
-        checkpoint_dir: Union[str, Path],
+        world_model_path: Optional[Union[str, Path]] = None,
+        policy_path: Optional[Union[str, Path]] = None,
+        checkpoint_dir: Optional[Union[str, Path]] = None,  # Deprecated, for backward compat
         config_path: Optional[str] = None,
         device: str = "cuda",
         action_horizon: int = 16,
@@ -37,34 +39,41 @@ class GeoFlowVLAPolicy:
     ):
         """
         Args:
-            checkpoint_dir: Directory containing phase1/ and phase2/ subdirectories
+            world_model_path: Direct path to world model checkpoint (e.g., phase1/world_model.pth)
+            policy_path: Direct path to policy checkpoint (e.g., phase2/policy.pth or phase2/best.pt)
+            checkpoint_dir: [DEPRECATED] Directory containing phase1/ and phase2/ subdirectories
             config_path: Path to config yaml (optional, loads from checkpoint if not provided)
             device: Torch device
             action_horizon: Full action chunk size
             action_exec_horizon: Actions to execute before replanning
         """
         self.device = torch.device(device)
-        self.checkpoint_dir = Path(checkpoint_dir)
         self.action_horizon = action_horizon
         self.action_exec_horizon = action_exec_horizon
+        
+        # Handle paths - support both new explicit paths and legacy checkpoint_dir
+        if world_model_path and policy_path:
+            # New explicit path mode
+            self.world_model_path = Path(world_model_path)
+            self.policy_path = Path(policy_path)
+            self.checkpoint_dir = None
+            logger.info("Using explicit checkpoint paths")
+        elif checkpoint_dir:
+            # Legacy mode: derive paths from checkpoint_dir
+            self.checkpoint_dir = Path(checkpoint_dir)
+            self.world_model_path = self.checkpoint_dir / "phase1" / "world_model.pth"
+            self.policy_path = self._find_policy_path(self.checkpoint_dir / "phase2")
+            logger.info(f"Using legacy checkpoint_dir mode: {checkpoint_dir}")
+        else:
+            raise ValueError(
+                "Must provide either (world_model_path, policy_path) or checkpoint_dir"
+            )
         
         # Load config
         if config_path:
             self.cfg = OmegaConf.load(config_path)
         else:
-            # Try to load from checkpoint
-            phase2_ckpt_path = self.checkpoint_dir / "phase2" / "best.pt"
-            if not phase2_ckpt_path.exists():
-                phase2_ckpt_path = self.checkpoint_dir / "phase2" / "latest.pt"
-            
-            if phase2_ckpt_path.exists():
-                phase2_ckpt = torch.load(phase2_ckpt_path, map_location="cpu", weights_only=False)
-                self.cfg = OmegaConf.create(phase2_ckpt["config"])
-            else:
-                raise FileNotFoundError(
-                    f"No checkpoint found in {self.checkpoint_dir}/phase2/. "
-                    "Please provide config_path explicitly."
-                )
+            self.cfg = self._load_config_from_checkpoint()
         
         # Infer architecture from checkpoint, then build and load models
         self._policy_state_dict = self._load_policy_state_dict()
@@ -80,22 +89,112 @@ class GeoFlowVLAPolicy:
         phase2_cfg = training_cfg.get("phase2", {}) if training_cfg else {}
         self.num_inference_steps = phase2_cfg.get("num_inference_steps", 50) if phase2_cfg else 50
         
-        logger.info(f"GeoFlowVLAPolicy initialized from {checkpoint_dir}")
-        logger.info(f"Using num_inference_steps={self.num_inference_steps}")
+        logger.info(f"GeoFlowVLAPolicy initialized")
+        logger.info(f"  World model: {self.world_model_path}")
+        logger.info(f"  Policy: {self.policy_path}")
+        logger.info(f"  Using num_inference_steps={self.num_inference_steps}")
+    
+    def _find_policy_path(self, phase2_dir: Path) -> Path:
+        """Find policy checkpoint in phase2 directory."""
+        for name in ["policy.pth", "best.pt", "latest.pt"]:
+            path = phase2_dir / name
+            if path.exists():
+                return path
+        raise FileNotFoundError(f"No policy checkpoint found in {phase2_dir}")
+    
+    def _load_config_from_checkpoint(self) -> DictConfig:
+        """Load config from policy checkpoint."""
+        # Try loading from policy checkpoint if it's a .pt file with config
+        if self.policy_path.suffix == ".pt" and self.policy_path.exists():
+            ckpt = torch.load(self.policy_path, map_location="cpu", weights_only=False)
+            if isinstance(ckpt, dict) and "config" in ckpt:
+                return OmegaConf.create(ckpt["config"])
+        
+        # If policy is .pth (state dict only), try to find config in .pt checkpoints
+        policy_dir = self.policy_path.parent
+        for ckpt_name in ["best.pt", "latest.pt"]:
+            ckpt_path = policy_dir / ckpt_name
+            if ckpt_path.exists():
+                try:
+                    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+                    if isinstance(ckpt, dict) and "config" in ckpt:
+                        logger.info(f"Loaded config from {ckpt_path}")
+                        return OmegaConf.create(ckpt["config"])
+                except Exception as e:
+                    logger.warning(f"Failed to load config from {ckpt_path}: {e}")
+        
+        # Fallback: try to find config.yaml in same/parent directory
+        config_candidates = [
+            self.policy_path.parent / "config.yaml",
+            self.policy_path.parent.parent / "config.yaml",
+            self.world_model_path.parent / "config.yaml",
+            self.world_model_path.parent.parent / "config.yaml",
+        ]
+        if self.checkpoint_dir:
+            config_candidates.append(self.checkpoint_dir / "config.yaml")
+        
+        for cfg_path in config_candidates:
+            if cfg_path.exists():
+                logger.info(f"Loaded config from {cfg_path}")
+                return OmegaConf.load(cfg_path)
+        
+        # Last resort: try to find default config from package
+        try:
+            import geo_flow_vla
+            package_dir = Path(geo_flow_vla.__file__).parent
+            default_configs = [
+                package_dir / "configs" / "config.yaml",
+                package_dir / "configs" / "libero_config.yaml",
+            ]
+            for cfg_path in default_configs:
+                if cfg_path.exists():
+                    logger.warning(f"Using default package config: {cfg_path}")
+                    return OmegaConf.load(cfg_path)
+        except Exception as e:
+            logger.debug(f"Could not load package config: {e}")
+        
+        raise FileNotFoundError(
+            f"No config found. Please provide --config explicitly.\n"
+            f"Searched .pt files in {policy_dir} and config.yaml in: {config_candidates}"
+        )
     
     def _load_policy_state_dict(self) -> Optional[Dict]:
         """Load policy state dict to infer architecture dimensions."""
-        # Try loading policy weights
-        policy_path = self.checkpoint_dir / "phase2" / "policy.pth"
-        if policy_path.exists():
-            return torch.load(policy_path, map_location="cpu", weights_only=False)
+        if not self.policy_path.exists():
+            return None
         
-        # Try from full checkpoint
-        for ckpt_name in ["best.pt", "latest.pt"]:
-            ckpt_path = self.checkpoint_dir / "phase2" / ckpt_name
-            if ckpt_path.exists():
-                ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-                return ckpt.get("policy_state_dict", ckpt.get("state_dict"))
+        ckpt = torch.load(self.policy_path, map_location="cpu", weights_only=False)
+        
+        # Handle different checkpoint formats
+        if isinstance(ckpt, dict):
+            if "policy_state_dict" in ckpt:
+                return ckpt["policy_state_dict"]
+            elif "state_dict" in ckpt:
+                return ckpt["state_dict"]
+            elif "blocks.0.qkv.weight" in ckpt:
+                # Direct state dict (policy.pth format)
+                return ckpt
+        
+        return None
+    
+    def _infer_action_dim_from_world_model(self, action_horizon: int) -> Optional[int]:
+        """Infer action_dim from world model checkpoint."""
+        if not self.world_model_path.exists():
+            return None
+        
+        try:
+            wm_ckpt = torch.load(self.world_model_path, map_location="cpu", weights_only=False)
+            
+            # forward_net.action_encoder.0.weight has shape (hidden_dim, action_dim * action_horizon)
+            if "forward_net.action_encoder.0.weight" in wm_ckpt:
+                weight_shape = wm_ckpt["forward_net.action_encoder.0.weight"].shape
+                total_action_dim = weight_shape[1]  # action_dim * action_horizon
+                action_dim = total_action_dim // action_horizon
+                logger.info(f"Inferred action_dim={action_dim} from world model checkpoint "
+                           f"(total={total_action_dim}, horizon={action_horizon})")
+                return action_dim
+        except Exception as e:
+            logger.warning(f"Failed to infer action_dim from world model: {e}")
         
         return None
     
@@ -158,8 +257,11 @@ class GeoFlowVLAPolicy:
         
         # Get model config - use correct paths matching training
         state_dim = cfg.model.get("state_dim", 512)
-        action_dim = cfg.model.get("action_dim", 7)
         action_horizon = cfg.model.get("action_horizon", 16)
+        
+        # Infer action_dim from world model checkpoint (takes precedence over config)
+        inferred_action_dim = self._infer_action_dim_from_world_model(action_horizon)
+        action_dim = inferred_action_dim if inferred_action_dim else cfg.model.get("action_dim", 7)
         
         # Get FB world model config
         fb_cfg = cfg.model.get("fb", {}) if hasattr(cfg.model, "get") else {}
@@ -223,41 +325,22 @@ class GeoFlowVLAPolicy:
     def _load_checkpoints(self) -> None:
         """Load trained weights."""
         # Load world model
-        world_model_path = self.checkpoint_dir / "phase1" / "world_model.pth"
-        if world_model_path.exists():
+        if self.world_model_path.exists():
             self.world_model.load_state_dict(
-                torch.load(world_model_path, map_location=self.device, weights_only=False)
+                torch.load(self.world_model_path, map_location=self.device, weights_only=False)
             )
-            logger.info(f"✓ Loaded world model from {world_model_path}")
+            logger.info(f"✓ Loaded world model from {self.world_model_path}")
         else:
-            raise FileNotFoundError(f"World model not found: {world_model_path}")
+            raise FileNotFoundError(f"World model not found: {self.world_model_path}")
         
         # Load policy - reuse already loaded state dict if available
         if self._policy_state_dict is not None:
             # Move tensors to device
             policy_sd = {k: v.to(self.device) for k, v in self._policy_state_dict.items()}
             self.policy.load_state_dict(policy_sd)
-            logger.info(f"✓ Loaded policy from cached state dict")
+            logger.info(f"✓ Loaded policy from {self.policy_path}")
         else:
-            policy_path = self.checkpoint_dir / "phase2" / "policy.pth"
-            if policy_path.exists():
-                self.policy.load_state_dict(
-                    torch.load(policy_path, map_location=self.device, weights_only=False)
-                )
-                logger.info(f"✓ Loaded policy from {policy_path}")
-            else:
-                # Try loading from full checkpoint
-                for ckpt_name in ["best.pt", "latest.pt"]:
-                    ckpt_path = self.checkpoint_dir / "phase2" / ckpt_name
-                    if ckpt_path.exists():
-                        ckpt = torch.load(ckpt_path, map_location=self.device, weights_only=False)
-                        self.policy.load_state_dict(ckpt["policy_state_dict"])
-                        logger.info(f"✓ Loaded policy from {ckpt_path}")
-                        break
-                else:
-                    raise FileNotFoundError(
-                        f"Policy not found in {self.checkpoint_dir}/phase2/"
-                    )
+            raise FileNotFoundError(f"Policy not found or invalid: {self.policy_path}")
     
     @torch.no_grad()
     def predict(
@@ -305,20 +388,6 @@ class GeoFlowVLAPolicy:
         # Store in buffer
         self.action_buffer = action_chunk[0].cpu().numpy()  # (action_horizon, action_dim)
         self.buffer_idx = 1  # Return first action now
-        
-        # Debug logging for action statistics (only log every N calls to avoid spam)
-        if not hasattr(self, '_predict_call_count'):
-            self._predict_call_count = 0
-        self._predict_call_count += 1
-        
-        if self._predict_call_count <= 5 or self._predict_call_count % 100 == 0:
-            action_stats = self.action_buffer
-            logger.info(
-                f"[Action Debug #{self._predict_call_count}] "
-                f"mean={action_stats.mean():.4f}, std={action_stats.std():.4f}, "
-                f"min={action_stats.min():.4f}, max={action_stats.max():.4f}"
-            )
-            logger.info(f"  First action: {self.action_buffer[0]}")
         
         return self.action_buffer[0]  # (action_dim,)
     
@@ -402,4 +471,3 @@ class GeoFlowVLAPolicy:
         self.world_model = self.world_model.to(self.device)
         self.policy = self.policy.to(self.device)
         return self
-

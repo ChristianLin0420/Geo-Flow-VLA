@@ -36,7 +36,9 @@ class BaseEvaluator(ABC):
     
     def __init__(
         self,
-        checkpoint_dir: str,
+        world_model_path: Optional[str] = None,
+        policy_path: Optional[str] = None,
+        checkpoint_dir: Optional[str] = None,  # Deprecated, for backward compat
         config_path: Optional[str] = None,
         device: str = "cuda",
         n_rollouts: int = 50,
@@ -45,10 +47,13 @@ class BaseEvaluator(ABC):
         log_wandb: bool = True,
         save_videos: bool = False,
         output_dir: str = "./eval_results",
+        run_name: Optional[str] = None,
     ):
         """
         Args:
-            checkpoint_dir: Path to model checkpoints
+            world_model_path: Direct path to world model checkpoint (e.g., phase1/world_model.pth)
+            policy_path: Direct path to policy checkpoint (e.g., phase2/policy.pth or phase2/best.pt)
+            checkpoint_dir: [DEPRECATED] Path to checkpoint directory with phase1/phase2 structure
             config_path: Path to config yaml
             device: Torch device
             n_rollouts: Number of evaluation rollouts per task
@@ -57,8 +62,11 @@ class BaseEvaluator(ABC):
             log_wandb: Log results to W&B
             save_videos: Save rollout videos
             output_dir: Directory for results
+            run_name: Custom wandb run name (default: auto-generated)
         """
-        self.checkpoint_dir = Path(checkpoint_dir)
+        self.world_model_path = world_model_path
+        self.policy_path = policy_path
+        self.checkpoint_dir = Path(checkpoint_dir) if checkpoint_dir else None
         self.config_path = config_path
         self.device = device
         self.n_rollouts = n_rollouts
@@ -68,6 +76,7 @@ class BaseEvaluator(ABC):
         self.save_videos = save_videos
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.run_name = run_name
         
         # Set random seed
         np.random.seed(seed)
@@ -83,20 +92,37 @@ class BaseEvaluator(ABC):
         from .policy_wrapper import GeoFlowVLAPolicy
         
         self.policy = GeoFlowVLAPolicy(
+            world_model_path=self.world_model_path,
+            policy_path=self.policy_path,
             checkpoint_dir=self.checkpoint_dir,
             config_path=self.config_path,
             device=self.device,
         )
-        logger.info(f"Policy loaded from {self.checkpoint_dir}")
+        
+        # Log checkpoint info
+        if self.world_model_path and self.policy_path:
+            logger.info(f"Policy loaded from explicit paths:")
+            logger.info(f"  World model: {self.world_model_path}")
+            logger.info(f"  Policy: {self.policy_path}")
+        else:
+            logger.info(f"Policy loaded from checkpoint_dir: {self.checkpoint_dir}")
     
     def _init_wandb(self) -> None:
         """Initialize wandb logging."""
         if self.log_wandb:
+            # Build checkpoint info for logging
+            if self.world_model_path and self.policy_path:
+                checkpoint_info = f"{self.world_model_path}, {self.policy_path}"
+            else:
+                checkpoint_info = str(self.checkpoint_dir)
+            
             wandb.init(
                 project="geo-flow-vla-eval",
-                name=f"{self.benchmark_name}-{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                name=self.run_name or f"{self.benchmark_name}-{datetime.now().strftime('%Y%m%d_%H%M%S')}",
                 config={
-                    "checkpoint": str(self.checkpoint_dir),
+                    "world_model_path": str(self.world_model_path) if self.world_model_path else None,
+                    "policy_path": str(self.policy_path) if self.policy_path else None,
+                    "checkpoint_dir": str(self.checkpoint_dir) if self.checkpoint_dir else None,
                     "n_rollouts": self.n_rollouts,
                     "max_steps": self.max_steps,
                     "benchmark": self.benchmark_name,
@@ -245,9 +271,18 @@ class BaseEvaluator(ABC):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         results_path = self.output_dir / f"{self.benchmark_name}_{timestamp}.json"
         
+        # Build checkpoint info
+        if self.world_model_path and self.policy_path:
+            checkpoint_info = {
+                "world_model_path": str(self.world_model_path),
+                "policy_path": str(self.policy_path),
+            }
+        else:
+            checkpoint_info = {"checkpoint_dir": str(self.checkpoint_dir)}
+        
         output = {
             "benchmark": self.benchmark_name,
-            "checkpoint": str(self.checkpoint_dir),
+            "checkpoint": checkpoint_info,
             "timestamp": timestamp,
             "seed": self.seed,
             "n_rollouts": self.n_rollouts,
@@ -288,10 +323,9 @@ class BaseEvaluator(ABC):
             logger.info(f"Saved video: {video_path}")
             
             if self.log_wandb:
+                # Use single key per task to avoid dashboard bloat (latest video overwrites)
                 wandb.log({
-                    f"{task_name}/video_{episode_idx}": wandb.Video(str(video_path))
+                    f"{task_name}/video": wandb.Video(str(video_path), format="mp4")
                 })
         except Exception as e:
             logger.warning(f"Failed to save video: {e}")
-
-

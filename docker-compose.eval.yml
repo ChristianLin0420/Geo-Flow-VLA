@@ -16,14 +16,15 @@ services:
     image: geo-flow-vla-eval:latest
     container_name: geoflow-eval
     
-    # GPU support
+    # GPU support with full NVIDIA capabilities
+    runtime: nvidia
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
               count: 1
-              capabilities: [gpu]
+              capabilities: [gpu, graphics, compute, utility]
     
     # Mount volumes
     volumes:
@@ -35,8 +36,11 @@ services:
     # Environment
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
       - WANDB_API_KEY=${WANDB_API_KEY:-}
       - DISPLAY=:99
+      # EGL rendering - auto-detected in entrypoint, but can override here
+      - MUJOCO_EGL_DEVICE_ID=0
     
     # Shared memory for PyTorch DataLoader
     shm_size: "16gb"

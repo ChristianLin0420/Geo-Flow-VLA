@@ -316,20 +316,41 @@ The training scripts support distributed data parallel (DDP) training:
 
 ### 6. Evaluation
 
-Evaluate trained models on all three benchmarks:
+Evaluate trained models on all three benchmarks.
+
+#### Checkpoint Loading Options
+
+The evaluation scripts support two ways to specify checkpoints:
+
+1. **Explicit paths (recommended)**: Directly specify world model and policy paths
+2. **Legacy directory mode**: Provide a checkpoint directory with `phase1/` and `phase2/` subdirectories
 
 #### Quick Start
 
 ```bash
-# Using unified eval script
-bash scripts/eval.sh libero ./checkpoints/libero/full --suite libero_10
-bash scripts/eval.sh rlbench ./checkpoints/rlbench/all --category easy
-bash scripts/eval.sh calvin ./checkpoints/calvin/abc --calvin_root ./data/calvin
+# Explicit paths (recommended)
+python -m geo_flow_vla.eval.eval_libero \
+    --world_model_path ./checkpoints/phase1/world_model.pth \
+    --policy_path ./checkpoints/phase2/best.pt \
+    --suite libero_10
+
+# Legacy mode (deprecated but supported)
+python -m geo_flow_vla.eval.eval_libero \
+    --checkpoint ./checkpoints/libero/full \
+    --suite libero_10
 ```
 
 #### LIBERO Evaluation
 
 ```bash
+# Explicit paths (recommended)
+python -m geo_flow_vla.eval.eval_libero \
+    --world_model_path ./checkpoints/phase1/world_model.pth \
+    --policy_path ./checkpoints/phase2/best.pt \
+    --suite libero_10 \
+    --n_rollouts 50
+
+# Legacy checkpoint directory mode
 python -m geo_flow_vla.eval.eval_libero \
     --checkpoint ./checkpoints/libero/full \
     --suite libero_10 \
@@ -339,7 +360,9 @@ python -m geo_flow_vla.eval.eval_libero \
 **Arguments:**
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--checkpoint` | (required) | Path to checkpoint directory |
+| `--world_model_path` | None | Direct path to world model checkpoint (e.g., `phase1/world_model.pth`) |
+| `--policy_path` | None | Direct path to policy checkpoint (e.g., `phase2/best.pt`) |
+| `--checkpoint` | None | [DEPRECATED] Path to checkpoint directory with phase1/phase2 structure |
 | `--config` | None | Path to config yaml (optional) |
 | `--suite` | `libero_10` | Task suite: `libero_10`, `libero_90`, `libero_spatial`, `libero_object`, `libero_goal` |
 | `--n_rollouts` | 50 | Number of rollouts per task |
@@ -353,6 +376,14 @@ python -m geo_flow_vla.eval.eval_libero \
 #### RLBench Evaluation
 
 ```bash
+# Explicit paths (recommended)
+python -m geo_flow_vla.eval.eval_rlbench \
+    --world_model_path ./checkpoints/phase1/world_model.pth \
+    --policy_path ./checkpoints/phase2/best.pt \
+    --category all \
+    --n_rollouts 25
+
+# Legacy checkpoint directory mode
 python -m geo_flow_vla.eval.eval_rlbench \
     --checkpoint ./checkpoints/rlbench/all \
     --category all \
@@ -362,7 +393,9 @@ python -m geo_flow_vla.eval.eval_rlbench \
 **Arguments:**
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--checkpoint` | (required) | Path to checkpoint directory |
+| `--world_model_path` | None | Direct path to world model checkpoint |
+| `--policy_path` | None | Direct path to policy checkpoint |
+| `--checkpoint` | None | [DEPRECATED] Path to checkpoint directory |
 | `--config` | None | Path to config yaml (optional) |
 | `--tasks` | None | Specific tasks to evaluate (space-separated) |
 | `--category` | None | Task category: `easy`, `medium`, `hard`, `all` |
@@ -384,6 +417,15 @@ python -m geo_flow_vla.eval.eval_rlbench \
 #### CALVIN Evaluation
 
 ```bash
+# Explicit paths (recommended)
+python -m geo_flow_vla.eval.eval_calvin \
+    --world_model_path ./checkpoints/phase1/world_model.pth \
+    --policy_path ./checkpoints/phase2/best.pt \
+    --calvin_root ./data/calvin \
+    --split D \
+    --n_chains 1000
+
+# Legacy checkpoint directory mode
 python -m geo_flow_vla.eval.eval_calvin \
     --checkpoint ./checkpoints/calvin/abc \
     --calvin_root ./data/calvin \
@@ -394,7 +436,9 @@ python -m geo_flow_vla.eval.eval_calvin \
 **Arguments:**
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--checkpoint` | (required) | Path to checkpoint directory |
+| `--world_model_path` | None | Direct path to world model checkpoint |
+| `--policy_path` | None | Direct path to policy checkpoint |
+| `--checkpoint` | None | [DEPRECATED] Path to checkpoint directory |
 | `--config` | None | Path to config yaml (optional) |
 | `--calvin_root` | (required) | Path to CALVIN dataset/environment |
 | `--split` | `D` | Evaluation split: `D`, `ABC`, `ABCD` |

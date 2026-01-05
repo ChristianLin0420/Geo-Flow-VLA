@@ -18,20 +18,22 @@ ENV PATH=${CUDA_HOME}/bin:${PATH}
 ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
 ENV TOKENIZERS_PARALLELISM=false
 
-# Headless rendering (EGL for MuJoCo/robosuite)
+# Headless rendering - use EGL with GPU
 ENV PYOPENGL_PLATFORM=egl
 ENV MUJOCO_GL=egl
 ENV NVIDIA_DRIVER_CAPABILITIES=all
 ENV NVIDIA_VISIBLE_DEVICES=all
 
-# EGL configuration for headless GPU rendering
+# EGL/MuJoCo GPU device configuration
 ENV EGL_DEVICE_ID=0
+ENV MUJOCO_EGL_DEVICE_ID=0
 ENV __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 ENV __GLX_VENDOR_LIBRARY_NAME=nvidia
 
 # CoppeliaSim (RLBench)
 ENV COPPELIASIM_ROOT=/opt/CoppeliaSim
 ENV QT_QPA_PLATFORM_PLUGIN_PATH=${COPPELIASIM_ROOT}
+ENV QT_QPA_PLATFORM=offscreen
 
 WORKDIR /workspace
 
@@ -40,10 +42,12 @@ WORKDIR /workspace
 # =============================================================================
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git wget curl vim unzip build-essential cmake \
-    # Graphics/Rendering (Mesa + NVIDIA EGL)
+    # Graphics/Rendering (Mesa + OSMesa + EGL + DRI)
     libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1 \
     libegl1-mesa libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev \
     libglvnd0 libglvnd-dev libglew-dev \
+    libosmesa6 libosmesa6-dev mesa-utils mesa-utils-extra \
+    libgl1-mesa-dri \
     libnvidia-egl-wayland1 \
     # Video encoding
     ffmpeg \
@@ -195,26 +199,33 @@ RUN git clone --recursive https://github.com/mees/calvin.git /tmp/calvin && \
 # =============================================================================
 # RLBench Benchmark (CoppeliaSim + PyRep)
 # =============================================================================
-ARG COPPELIASIM_VERSION=4.5.0
-RUN cd /opt && \
-    wget -q https://www.coppeliarobotics.com/files/V${COPPELIASIM_VERSION}/CoppeliaSim_Edu_V${COPPELIASIM_VERSION}_Ubuntu22_04.tar.xz \
-    -O CoppeliaSim.tar.xz && \
-    tar -xJf CoppeliaSim.tar.xz && \
-    mv CoppeliaSim_Edu_V${COPPELIASIM_VERSION}_Ubuntu22_04 CoppeliaSim && \
-    rm CoppeliaSim.tar.xz || \
-    echo "Warning: CoppeliaSim installation failed"
+# IMPORTANT: PyRep/RLBench require CoppeliaSim V4.1.0 (NOT newer versions!)
+# Download from: https://www.coppeliarobotics.com/files/V4_1_0/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
+# Extract and place folder in project root before building, then rename:
+#   mv CoppeliaSim_Edu_V4_1_0_Ubuntu20_04 CoppeliaSim_Edu_V4_1_0
+COPY CoppeliaSim_Edu_V4_1_0 /opt/CoppeliaSim
+RUN ls -la /opt/CoppeliaSim/ && echo "✓ CoppeliaSim 4.1.0 installed"
 
-# Update LD_LIBRARY_PATH for CoppeliaSim
-ENV LD_LIBRARY_PATH=${COPPELIASIM_ROOT}:${LD_LIBRARY_PATH}
-
-RUN pip install --no-cache-dir cffi && \
+# PyRep installation (requires COPPELIASIM_ROOT)
+# IMPORTANT: Uninstall any existing PyRep first, then install from source
+# Install pyzmq and cbor2 for CoppeliaSim Python communication
+RUN rm -f /opt/CoppeliaSim/libcoppeliaSim.so.1 && \
+    pip uninstall -y pyrep 2>/dev/null || true && \
+    pip install --no-cache-dir cffi pyzmq cbor2 && \
     git clone https://github.com/stepjam/PyRep.git /tmp/PyRep && \
-    cd /tmp/PyRep && pip install -e . || \
-    echo "Warning: PyRep installation failed"
+    cd /tmp/PyRep && \
+    COPPELIASIM_ROOT=/opt/CoppeliaSim pip install --no-cache-dir . && \
+    cd /workspace && \
+    LD_LIBRARY_PATH=/opt/CoppeliaSim:$LD_LIBRARY_PATH python -c "import pyrep; print(pyrep.__file__); print('✓ PyRep installed')"
 
-RUN git clone https://github.com/stepjam/RLBench.git /tmp/RLBench && \
-    cd /tmp/RLBench && pip install -e . || \
-    echo "Warning: RLBench installation failed"
+# Add CoppeliaSim to library path permanently
+ENV LD_LIBRARY_PATH=/opt/CoppeliaSim:${LD_LIBRARY_PATH}
+
+# RLBench installation - also use non-editable install
+RUN pip uninstall -y rlbench 2>/dev/null || true && \
+    git clone https://github.com/stepjam/RLBench.git /tmp/RLBench && \
+    cd /tmp/RLBench && pip install --no-cache-dir . && \
+    python -c "import rlbench; print('✓ RLBench installed')"
 
 # =============================================================================
 # Copy and Install Geo-Flow VLA
@@ -269,15 +280,46 @@ RUN python -c "import torch; print(f'✓ PyTorch: {torch.__version__}')" && \
     python -c "from geo_flow_vla.eval.policy_wrapper import GeoFlowVLAPolicy; print('✓ GeoFlowVLAPolicy OK')" || \
     echo "Some verifications failed"
 
+# Verify RLBench/PyRep installation and scene file
+RUN python -c "import pyrep; print(f'✓ PyRep: {pyrep.__file__}')" && \
+    python -c "import rlbench; print(f'✓ RLBench OK')" && \
+    ls -la /tmp/RLBench/rlbench/task_design.ttt && \
+    echo "✓ RLBench scene file exists"
+
 # =============================================================================
-# Entrypoint (headless display)
+# Entrypoint (headless display with EGL/OSMesa auto-detection)
 # =============================================================================
 RUN echo '#!/bin/bash\n\
+set -e\n\
+\n\
+# Setup headless display\n\
 if [ -z "$DISPLAY" ]; then\n\
     export DISPLAY=:99\n\
     Xvfb :99 -screen 0 1024x768x24 &\n\
     sleep 1\n\
 fi\n\
+\n\
+# Auto-detect EGL device ID if not set\n\
+if [ -z "$MUJOCO_EGL_DEVICE_ID" ]; then\n\
+    # Default to first GPU visible in CUDA_VISIBLE_DEVICES, or 0\n\
+    export MUJOCO_EGL_DEVICE_ID=${CUDA_VISIBLE_DEVICES%%,*}\n\
+    export MUJOCO_EGL_DEVICE_ID=${MUJOCO_EGL_DEVICE_ID:-0}\n\
+fi\n\
+\n\
+# Try to detect NVIDIA EGL support\n\
+if ldconfig -p | grep -q libEGL_nvidia; then\n\
+    echo "[entrypoint] NVIDIA EGL available - using EGL rendering"\n\
+    export MUJOCO_GL=egl\n\
+    export PYOPENGL_PLATFORM=egl\n\
+elif [ -f /usr/lib/x86_64-linux-gnu/libOSMesa.so ]; then\n\
+    echo "[entrypoint] NVIDIA EGL not found - falling back to OSMesa"\n\
+    export MUJOCO_GL=osmesa\n\
+    export PYOPENGL_PLATFORM=osmesa\n\
+else\n\
+    echo "[entrypoint] Warning: No suitable rendering backend found"\n\
+fi\n\
+\n\
+echo "[entrypoint] MUJOCO_GL=$MUJOCO_GL, MUJOCO_EGL_DEVICE_ID=$MUJOCO_EGL_DEVICE_ID"\n\
 exec "$@"\n' > /entrypoint.sh && chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
