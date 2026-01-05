@@ -41,6 +41,7 @@ from tqdm import tqdm
 
 from ..models.dual_encoder import DualEncoder
 from ..models.world_model import FBWorldModel
+from ..models.language_conditioned_world_model import LanguageConditionedFBWorldModel
 from ..losses.fb_objective import FBObjective
 from ..data.libero_dataset import LIBERODataset, create_libero_dataloaders
 from ..data.normalizer import StateActionNormalizer
@@ -125,7 +126,7 @@ class WorldModelTrainer:
         return self.world_model
 
     def _build_models(self) -> None:
-        """Initialize dual encoder and world model."""
+        """Initialize dual encoder and world model with language conditioning."""
         cfg = self.cfg
         
         # Dual encoder (frozen)
@@ -141,23 +142,46 @@ class WorldModelTrainer:
             param.requires_grad = False
         self.dual_encoder.eval()
         
-        # World model (trainable)
-        self.world_model = FBWorldModel(
-            state_dim=cfg.model.state_dim,
-            action_dim=cfg.model.action_dim,
-            action_horizon=cfg.model.action_horizon,
-            latent_dim=cfg.model.fb.latent_dim,
-            hidden_dim=cfg.model.fb.hidden_dim,
-            num_residual_blocks=cfg.model.fb.num_residual_blocks,
-            ema_tau=cfg.model.fb.ema_tau,
-        ).to(self.device)
+        # Check if using language-conditioned world model
+        use_language = cfg.model.get("use_language_conditioning", True)
+        language_model = cfg.model.get("language_model", "openai/clip-vit-large-patch14")
+        use_mock_language = cfg.model.get("use_mock_language", False)
+        
+        if use_language:
+            # Language-conditioned world model (new architecture)
+            self.world_model = LanguageConditionedFBWorldModel(
+                state_dim=cfg.model.state_dim,
+                action_dim=cfg.model.action_dim,
+                action_horizon=cfg.model.action_horizon,
+                latent_dim=cfg.model.fb.latent_dim,
+                hidden_dim=cfg.model.fb.hidden_dim,
+                num_residual_blocks=cfg.model.fb.num_residual_blocks,
+                ema_tau=cfg.model.fb.ema_tau,
+                language_model=language_model,
+                use_mock_language=use_mock_language,
+            ).to(self.device)
+            logger.info(f"Using Language-Conditioned FB World Model (language_model={language_model})")
+        else:
+            # Legacy world model (no language)
+            self.world_model = FBWorldModel(
+                state_dim=cfg.model.state_dim,
+                action_dim=cfg.model.action_dim,
+                action_horizon=cfg.model.action_horizon,
+                latent_dim=cfg.model.fb.latent_dim,
+                hidden_dim=cfg.model.fb.hidden_dim,
+                num_residual_blocks=cfg.model.fb.num_residual_blocks,
+                ema_tau=cfg.model.fb.ema_tau,
+            ).to(self.device)
+            logger.info("Using Legacy FB World Model (no language conditioning)")
+        
+        self.use_language = use_language
         
         # Wrap with DDP if distributed
         if self.is_distributed:
             self.world_model = wrap_model_ddp(
                 self.world_model, 
                 self.device,
-                find_unused_parameters=cfg.hardware.get("find_unused_params", False),
+                find_unused_parameters=cfg.hardware.get("find_unused_params", True),  # Enable for language encoder
             )
         
         logger.info(f"World model parameters: {sum(p.numel() for p in self.world_model.parameters()):,}")
@@ -281,7 +305,7 @@ class WorldModelTrainer:
         return self.dual_encoder(rgb)
 
     def train_epoch(self) -> Dict[str, float]:
-        """Run one training epoch with distributed support."""
+        """Run one training epoch with language-conditioned FB objective."""
         self.world_model.train()
         
         epoch_losses = {
@@ -302,7 +326,6 @@ class WorldModelTrainer:
             actions = actions.to(self.device)
             
             # Encode states (using first and last frames)
-            # For trajectory, we need current and future state
             with torch.no_grad():
                 # Current state from first frame
                 if rgb.dim() == 5:  # (B, T, C, H, W)
@@ -315,17 +338,43 @@ class WorldModelTrainer:
                 current_state = self.encode_batch(current_rgb)
                 future_state = self.encode_batch(future_rgb)
             
+            # Process instructions for language-conditioned world model
+            if self.use_language:
+                # Convert instruction batch to list of strings
+                if isinstance(instruction, (list, tuple)):
+                    instructions = list(instruction)
+                elif hasattr(instruction, 'tolist'):
+                    instructions = instruction.tolist()
+                else:
+                    instructions = [str(instruction)] * current_state.shape[0]
+                
+                # Encode instructions
+                with torch.no_grad():
+                    lang_embedding = self.world_model_module.encode_instruction(instructions)
+            
             # Forward pass with mixed precision
             self.optimizer.zero_grad()
             
             if self.scaler is not None:
                 with autocast('cuda'):
-                    loss_dict = self.fb_objective(
-                        self.world_model,
-                        current_state,
-                        future_state,
-                        actions,
-                    )
+                    if self.use_language:
+                        # Language-conditioned loss
+                        loss_dict = self.world_model_module.compute_loss(
+                            current_state,
+                            future_state,
+                            actions,
+                            lang_embedding,
+                            forward_weight=self.cfg.training.phase1.forward_weight,
+                            backward_weight=self.cfg.training.phase1.backward_weight,
+                        )
+                    else:
+                        # Legacy FB objective
+                        loss_dict = self.fb_objective(
+                            self.world_model,
+                            current_state,
+                            future_state,
+                            actions,
+                        )
                 
                 self.scaler.scale(loss_dict["loss"]).backward()
                 
@@ -339,12 +388,24 @@ class WorldModelTrainer:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
-                loss_dict = self.fb_objective(
-                    self.world_model,
-                    current_state,
-                    future_state,
-                    actions,
-                )
+                if self.use_language:
+                    # Language-conditioned loss
+                    loss_dict = self.world_model_module.compute_loss(
+                        current_state,
+                        future_state,
+                        actions,
+                        lang_embedding,
+                        forward_weight=self.cfg.training.phase1.forward_weight,
+                        backward_weight=self.cfg.training.phase1.backward_weight,
+                    )
+                else:
+                    # Legacy FB objective
+                    loss_dict = self.fb_objective(
+                        self.world_model,
+                        current_state,
+                        future_state,
+                        actions,
+                    )
                 
                 loss_dict["loss"].backward()
                 
@@ -357,7 +418,7 @@ class WorldModelTrainer:
             
             self.scheduler.step()
             
-            # Update EMA target network (access underlying module for custom methods)
+            # Update EMA target network
             self.world_model_module.update_target_network()
             
             # Accumulate losses
@@ -395,7 +456,7 @@ class WorldModelTrainer:
 
     @torch.no_grad()
     def validate(self) -> Dict[str, float]:
-        """Run validation."""
+        """Run validation with language conditioning."""
         self.world_model.eval()
         
         val_losses = {
@@ -410,6 +471,7 @@ class WorldModelTrainer:
         last_current_state = None
         last_future_state = None
         last_actions = None
+        last_lang_embedding = None
         
         for batch in tqdm(self.val_loader, desc="Validation", disable=not self.is_main):
             rgb, depth, proprio, instruction, actions = batch
@@ -427,20 +489,45 @@ class WorldModelTrainer:
             current_state = self.encode_batch(current_rgb)
             future_state = self.encode_batch(future_rgb)
             
-            loss_dict = self.fb_objective(
-                self.world_model,
-                current_state,
-                future_state,
-                actions,
-            )
+            # Process instructions for language-conditioned world model
+            if self.use_language:
+                if isinstance(instruction, (list, tuple)):
+                    instructions = list(instruction)
+                elif hasattr(instruction, 'tolist'):
+                    instructions = instruction.tolist()
+                else:
+                    instructions = [str(instruction)] * current_state.shape[0]
+                
+                lang_embedding = self.world_model_module.encode_instruction(instructions)
+                
+                loss_dict = self.world_model_module.compute_loss(
+                    current_state,
+                    future_state,
+                    actions,
+                    lang_embedding,
+                    forward_weight=self.cfg.training.phase1.forward_weight,
+                    backward_weight=self.cfg.training.phase1.backward_weight,
+                )
+                
+                # Collect embeddings for visualization (with language)
+                z = self.world_model_module.encode_goal(future_state, lang_embedding)
+                last_lang_embedding = lang_embedding
+            else:
+                loss_dict = self.fb_objective(
+                    self.world_model,
+                    current_state,
+                    future_state,
+                    actions,
+                )
+                
+                # Legacy: encode goal without language
+                z = self.world_model_module.encode_goal(future_state)
             
             for key in val_losses:
                 if key in loss_dict:
                     val_losses[key] += loss_dict[key].item()
             num_batches += 1
             
-            # Collect embeddings for visualization
-            z = self.world_model_module.encode_goal(future_state)
             all_z.append(z.cpu())
             
             # Store last batch for visualizations

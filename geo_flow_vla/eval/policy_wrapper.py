@@ -3,10 +3,12 @@ Inference wrapper for Geo-Flow-VLA trained policy.
 
 Loads Phase 1 (world model) and Phase 2 (policy) checkpoints
 and provides action prediction interface for evaluation.
+
+Supports both legacy (no language) and new (language-conditioned) world models.
 """
 
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.nn as nn
@@ -84,6 +86,9 @@ class GeoFlowVLAPolicy:
         self.action_buffer = None
         self.buffer_idx = 0
         
+        # Current instruction for language-conditioned model
+        self._current_instruction = "perform the manipulation task"
+        
         # Inference settings from config
         training_cfg = self.cfg.get("training", {})
         phase2_cfg = training_cfg.get("phase2", {}) if training_cfg else {}
@@ -92,6 +97,7 @@ class GeoFlowVLAPolicy:
         logger.info(f"GeoFlowVLAPolicy initialized")
         logger.info(f"  World model: {self.world_model_path}")
         logger.info(f"  Policy: {self.policy_path}")
+        logger.info(f"  Language conditioning: {self.use_language}")
         logger.info(f"  Using num_inference_steps={self.num_inference_steps}")
     
     def _find_policy_path(self, phase2_dir: Path) -> Path:
@@ -237,9 +243,10 @@ class GeoFlowVLAPolicy:
         return hidden_dim, num_layers, num_heads
         
     def _build_models(self) -> None:
-        """Initialize model architectures."""
+        """Initialize model architectures with language conditioning support."""
         from geo_flow_vla.models.dual_encoder import DualEncoder
         from geo_flow_vla.models.world_model import FBWorldModel
+        from geo_flow_vla.models.language_conditioned_world_model import LanguageConditionedFBWorldModel
         from geo_flow_vla.models.diffusion_policy import DiffusionPolicy
         
         cfg = self.cfg
@@ -271,15 +278,34 @@ class GeoFlowVLAPolicy:
         fb_hidden_dim = fb_cfg.get("hidden_dim", 512) if fb_cfg else 512
         num_residual_blocks = fb_cfg.get("num_residual_blocks", 2) if fb_cfg else 2
         
-        # World Model (frozen) - use explicit parameters matching training
-        self.world_model = FBWorldModel(
-            state_dim=state_dim,
-            action_dim=action_dim,
-            action_horizon=action_horizon,
-            latent_dim=latent_dim,
-            hidden_dim=fb_hidden_dim,
-            num_residual_blocks=num_residual_blocks,
-        ).to(self.device)
+        # Check if using language conditioning
+        self.use_language = cfg.model.get("use_language_conditioning", True)
+        language_model = cfg.model.get("language_model", "openai/clip-vit-large-patch14")
+        use_mock_language = cfg.model.get("use_mock_language", False)
+        
+        # World Model (frozen) - use appropriate version based on config
+        if self.use_language:
+            self.world_model = LanguageConditionedFBWorldModel(
+                state_dim=state_dim,
+                action_dim=action_dim,
+                action_horizon=action_horizon,
+                latent_dim=latent_dim,
+                hidden_dim=fb_hidden_dim,
+                num_residual_blocks=num_residual_blocks,
+                language_model=language_model,
+                use_mock_language=use_mock_language,
+            ).to(self.device)
+            logger.info(f"WorldModel: Language-Conditioned (language_model={language_model})")
+        else:
+            self.world_model = FBWorldModel(
+                state_dim=state_dim,
+                action_dim=action_dim,
+                action_horizon=action_horizon,
+                latent_dim=latent_dim,
+                hidden_dim=fb_hidden_dim,
+                num_residual_blocks=num_residual_blocks,
+            ).to(self.device)
+            logger.info(f"WorldModel: Legacy (no language)")
         
         logger.info(f"WorldModel: state_dim={state_dim}, action_dim={action_dim}, "
                     f"action_horizon={action_horizon}, latent_dim={latent_dim}")
@@ -326,9 +352,21 @@ class GeoFlowVLAPolicy:
         """Load trained weights."""
         # Load world model
         if self.world_model_path.exists():
-            self.world_model.load_state_dict(
-                torch.load(self.world_model_path, map_location=self.device, weights_only=False)
-            )
+            checkpoint = torch.load(self.world_model_path, map_location=self.device, weights_only=False)
+            
+            # Load with strict=False to handle architecture differences
+            # (e.g., language encoder weights may not be in checkpoint for new models)
+            missing, unexpected = self.world_model.load_state_dict(checkpoint, strict=False)
+            
+            if missing:
+                # Filter out language encoder keys which are expected to be missing
+                # when loading old checkpoints into new language-conditioned model
+                non_lang_missing = [k for k in missing if not k.startswith("language_encoder")]
+                if non_lang_missing:
+                    logger.warning(f"Missing keys in world model: {non_lang_missing[:5]}...")
+            if unexpected:
+                logger.warning(f"Unexpected keys in world model: {unexpected[:5]}...")
+            
             logger.info(f"✓ Loaded world model from {self.world_model_path}")
         else:
             raise FileNotFoundError(f"World model not found: {self.world_model_path}")
@@ -342,6 +380,18 @@ class GeoFlowVLAPolicy:
         else:
             raise FileNotFoundError(f"Policy not found or invalid: {self.policy_path}")
     
+    def set_instruction(self, instruction: str) -> None:
+        """
+        Set the current task instruction for language-conditioned inference.
+        
+        Call this at the start of each episode with the task description.
+        
+        Args:
+            instruction: Task description string
+        """
+        self._current_instruction = instruction
+        logger.debug(f"Set instruction: {instruction}")
+
     @torch.no_grad()
     def predict(
         self,
@@ -355,13 +405,17 @@ class GeoFlowVLAPolicy:
         
         Args:
             rgb: RGB image (H, W, 3), uint8 or float [0,1]
-            instruction: Language instruction (optional, for future use)
-            proprio: Proprioceptive state (optional, for future use)
+            instruction: Language instruction (uses stored if None)
+            proprio: Proprioceptive state (optional, not currently used)
             use_buffer: Use action buffer for temporal smoothing
             
         Returns:
             Action array of shape (action_dim,)
         """
+        # Use provided instruction or fall back to stored one
+        if instruction is None:
+            instruction = self._current_instruction
+        
         # Use buffered action if available
         if use_buffer and self.action_buffer is not None:
             if self.buffer_idx < min(len(self.action_buffer), self.action_exec_horizon):
@@ -375,8 +429,11 @@ class GeoFlowVLAPolicy:
         # Encode observation → state
         state = self.dual_encoder(rgb_tensor)  # (1, state_dim)
         
-        # Get goal embedding from world model
-        goal = self.world_model.get_goal_embedding(state)  # (1, latent_dim)
+        # Get goal embedding from world model (with or without language)
+        if self.use_language:
+            goal = self.world_model.get_goal_embedding(state, instruction)  # (1, latent_dim)
+        else:
+            goal = self.world_model.get_goal_embedding(state)  # (1, latent_dim)
         
         # Generate action chunk via diffusion/flow matching
         action_chunk = self.policy.sample(

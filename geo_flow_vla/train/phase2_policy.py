@@ -43,6 +43,7 @@ from tqdm import tqdm
 
 from ..models.dual_encoder import DualEncoder
 from ..models.world_model import FBWorldModel
+from ..models.language_conditioned_world_model import LanguageConditionedFBWorldModel
 from ..models.diffusion_policy import DiffusionPolicy
 from ..models.discriminator import CPRDiscriminator
 from ..losses.flow_matching_loss import FlowMatchingLoss
@@ -211,7 +212,7 @@ class PolicyTrainer:
             self.early_stopping = None
 
     def _build_models(self) -> None:
-        """Initialize all models."""
+        """Initialize all models with language conditioning support."""
         cfg = self.cfg
         
         # Dual encoder (frozen)
@@ -226,18 +227,37 @@ class PolicyTrainer:
             param.requires_grad = False
         self.dual_encoder.eval()
         
+        # Check if using language conditioning
+        use_language = cfg.model.get("use_language_conditioning", True)
+        language_model = cfg.model.get("language_model", "openai/clip-vit-large-patch14")
+        use_mock_language = cfg.model.get("use_mock_language", False)
+        self.use_language = use_language
+        
         # World model (frozen, loaded from Phase 1)
-        self.world_model = FBWorldModel(
-            state_dim=cfg.model.state_dim,
-            action_dim=cfg.model.action_dim,
-            action_horizon=cfg.model.action_horizon,
-            latent_dim=cfg.model.fb.latent_dim,
-            hidden_dim=cfg.model.fb.hidden_dim,
-            num_residual_blocks=cfg.model.fb.num_residual_blocks,
-        ).to(self.device)
+        if use_language:
+            self.world_model = LanguageConditionedFBWorldModel(
+                state_dim=cfg.model.state_dim,
+                action_dim=cfg.model.action_dim,
+                action_horizon=cfg.model.action_horizon,
+                latent_dim=cfg.model.fb.latent_dim,
+                hidden_dim=cfg.model.fb.hidden_dim,
+                num_residual_blocks=cfg.model.fb.num_residual_blocks,
+                language_model=language_model,
+                use_mock_language=use_mock_language,
+            ).to(self.device)
+            logger.info(f"Using Language-Conditioned FB World Model")
+        else:
+            self.world_model = FBWorldModel(
+                state_dim=cfg.model.state_dim,
+                action_dim=cfg.model.action_dim,
+                action_horizon=cfg.model.action_horizon,
+                latent_dim=cfg.model.fb.latent_dim,
+                hidden_dim=cfg.model.fb.hidden_dim,
+                num_residual_blocks=cfg.model.fb.num_residual_blocks,
+            ).to(self.device)
+            logger.info(f"Using Legacy FB World Model (no language)")
         
         # Load pretrained world model
-        # Check if custom path is specified, otherwise auto-detect
         custom_wm_path = cfg.training.phase2.get("world_model_path", None)
         if custom_wm_path is not None:
             world_model_path = Path(custom_wm_path)
@@ -246,14 +266,19 @@ class PolicyTrainer:
         
         if world_model_path.exists():
             checkpoint = torch.load(world_model_path, map_location=self.device, weights_only=False)
-            # Support both full checkpoint (epoch_*.pt) and state_dict only (world_model.pth)
             if isinstance(checkpoint, dict) and "world_model_state_dict" in checkpoint:
                 state_dict = checkpoint["world_model_state_dict"]
                 logger.info(f"Loaded world model from full checkpoint {world_model_path} (epoch {checkpoint.get('epoch', '?')})")
             else:
                 state_dict = checkpoint
                 logger.info(f"Loaded world model from {world_model_path}")
-            self.world_model.load_state_dict(state_dict)
+            
+            # Load state dict with strict=False to handle potential architecture differences
+            missing, unexpected = self.world_model.load_state_dict(state_dict, strict=False)
+            if missing:
+                logger.warning(f"Missing keys when loading world model: {missing[:5]}...")
+            if unexpected:
+                logger.warning(f"Unexpected keys when loading world model: {unexpected[:5]}...")
         else:
             logger.warning(f"World model not found at {world_model_path}, using random init")
         
@@ -462,21 +487,36 @@ class PolicyTrainer:
         return self.dual_encoder(rgb)
 
     @torch.no_grad()
-    def get_goal_embedding(self, state: torch.Tensor) -> torch.Tensor:
-        """Get goal embedding from world model."""
-        return self.world_model.encode_goal(state)
+    def get_goal_embedding(
+        self,
+        state: torch.Tensor,
+        lang_embedding: torch.Tensor = None,
+    ) -> torch.Tensor:
+        """
+        Get goal embedding from world model.
+        
+        For language-conditioned model: requires lang_embedding
+        For legacy model: ignores lang_embedding
+        """
+        if self.use_language:
+            if lang_embedding is None:
+                raise ValueError("Language embedding required for language-conditioned world model")
+            return self.world_model.encode_goal(state, lang_embedding)
+        else:
+            return self.world_model.encode_goal(state)
 
     def train_discriminator_step(
         self,
         real_state: torch.Tensor,
         real_future_state: torch.Tensor,
+        lang_embedding: torch.Tensor = None,
     ) -> Dict[str, torch.Tensor]:
         """One discriminator training step."""
         # Get real goals (from future states in dataset)
-        real_goal = self.get_goal_embedding(real_future_state)
+        real_goal = self.get_goal_embedding(real_future_state, lang_embedding)
         
         # Get fake goals (from current states - self-prediction)
-        fake_goal = self.get_goal_embedding(real_state)
+        fake_goal = self.get_goal_embedding(real_state, lang_embedding)
         
         self.disc_optimizer.zero_grad()
         
@@ -512,13 +552,14 @@ class PolicyTrainer:
         state: torch.Tensor,
         future_state: torch.Tensor,
         actions: torch.Tensor,
+        lang_embedding: torch.Tensor = None,
     ) -> Dict[str, torch.Tensor]:
         """One policy training step."""
         # Get goal from future state (for conditioning)
-        goal = self.get_goal_embedding(future_state)
+        goal = self.get_goal_embedding(future_state, lang_embedding)
         
         # Get fake goal (for CPR)
-        fake_goal = self.get_goal_embedding(state)
+        fake_goal = self.get_goal_embedding(state, lang_embedding)
         
         self.policy_optimizer.zero_grad()
         
@@ -582,7 +623,7 @@ class PolicyTrainer:
         }
 
     def train_epoch(self) -> Dict[str, float]:
-        """Run one training epoch with distributed support."""
+        """Run one training epoch with language conditioning support."""
         self.policy.train()
         self.discriminator.train()
         
@@ -615,15 +656,28 @@ class PolicyTrainer:
                 current_state = self.encode_batch(current_rgb)
                 future_state = self.encode_batch(future_rgb)
             
+            # Process instructions for language-conditioned world model
+            lang_embedding = None
+            if self.use_language:
+                if isinstance(instruction, (list, tuple)):
+                    instructions = list(instruction)
+                elif hasattr(instruction, 'tolist'):
+                    instructions = instruction.tolist()
+                else:
+                    instructions = [str(instruction)] * current_state.shape[0]
+                
+                with torch.no_grad():
+                    lang_embedding = self.world_model.encode_instruction(instructions)
+            
             # Train discriminator
             for _ in range(self.cfg.training.phase2.discriminator_steps):
                 disc_metrics = self.train_discriminator_step(
-                    current_state, future_state
+                    current_state, future_state, lang_embedding
                 )
             
             # Train policy
             policy_metrics = self.train_policy_step(
-                current_state, future_state, actions
+                current_state, future_state, actions, lang_embedding
             )
             
             # Accumulate metrics

@@ -26,7 +26,11 @@ timm>=0.9.0
 
 # MoGe-2 - install separately:
 # pip install git+https://github.com/microsoft/MoGe.git
-# Note: Requires transformers and additional dependencies
+
+# =============================================================================
+# Language Models (for instruction conditioning)
+# =============================================================================
+transformers>=4.36.0   # For CLIP text encoder
 
 # =============================================================================
 # Data Processing

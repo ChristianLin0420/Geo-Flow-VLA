@@ -17,6 +17,11 @@ model:
   action_dim: 7               # 7-DoF: xyz + axis-angle rotation + gripper
   action_horizon: 16          # Number of action steps to predict
   
+  # Language conditioning
+  use_language_conditioning: true   # Enable language-conditioned world model
+  language_model: "openai/clip-vit-large-patch14"  # CLIP text encoder
+  use_mock_language: false    # Use mock encoder (for debugging without CLIP)
+  
   # DiT (Diffusion Transformer) architecture
   dit:
     hidden_dim: 768           # Transformer hidden dimension
@@ -201,7 +206,7 @@ hardware:
   distributed: false          # Enable multi-GPU training
   num_gpus: 1                 # Number of GPUs (auto-detected if using torchrun)
   backend: "nccl"             # Distributed backend: nccl, gloo
-  find_unused_params: false   # Set true if model has unused parameters
+  find_unused_params: true    # Required for language-conditioned model (frozen encoder)
 
 # ============================================================================
 # Evaluation

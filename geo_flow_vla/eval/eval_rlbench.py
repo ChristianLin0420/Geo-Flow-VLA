@@ -201,6 +201,11 @@ class RLBenchEvaluator(BaseEvaluator):
             descriptions, obs = task.reset()
             self.policy.reset()
             
+            # Set instruction for language-conditioned policy
+            instruction = descriptions[0] if descriptions else f"complete the {task_name} task"
+            if hasattr(self.policy, 'set_instruction'):
+                self.policy.set_instruction(instruction)
+            
             total_reward = 0
             success = False
             step = 0
@@ -223,10 +228,10 @@ class RLBenchEvaluator(BaseEvaluator):
                     [float(obs.gripper_open)],  # 1D
                 ])
                 
-                # Get action from policy
+                # Get action from policy (instruction already set)
                 action = self.policy.predict(
                     rgb=rgb,
-                    instruction=descriptions[0] if descriptions else None,
+                    instruction=instruction,
                     proprio=proprio,
                 )
                 

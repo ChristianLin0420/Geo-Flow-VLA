@@ -430,7 +430,9 @@ class RLBenchDataset(BaseManipulationDataset):
                 action = np.concatenate([gripper_pose, [float(gripper_open)]])
                 actions_list.append(action)
                 
-                # Extract proprioception (joint positions)
+                # Extract proprioception (joint positions - 7D)
+                # Note: Keeping as 7D (natural joint dimension) - don't pad to 8D
+                # Action is 8D (gripper_pose 7D + gripper_open 1D) which is separate
                 proprio = get_obs_attr(obs, 'joint_positions', np.zeros(7))
                 
                 if not isinstance(proprio, np.ndarray):
@@ -439,11 +441,11 @@ class RLBenchDataset(BaseManipulationDataset):
                 # Flatten if needed
                 proprio = proprio.flatten()
                 
-                # Pad proprio to 8D to match action dim
-                if len(proprio) < 8:
-                    proprio = np.concatenate([proprio, np.zeros(8 - len(proprio))])
-                elif len(proprio) > 8:
-                    proprio = proprio[:8]
+                # Ensure proprio is 7D (robot has 7 joints)
+                if len(proprio) < 7:
+                    proprio = np.concatenate([proprio, np.zeros(7 - len(proprio))])
+                elif len(proprio) > 7:
+                    proprio = proprio[:7]
                 
                 proprio_list.append(proprio)
             
