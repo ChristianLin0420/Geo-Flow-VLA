@@ -386,6 +386,17 @@ class LanguageConditionedFBWorldModel(nn.Module):
             num_residual_blocks=num_residual_blocks,
             dropout=dropout,
         )
+        
+        # Language-to-goal projection for CLIP-style alignment loss
+        self.lang_to_goal_proj = nn.Sequential(
+            nn.Linear(language_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, latent_dim),
+        )
+        # Initialize with small weights for stable training
+        nn.init.xavier_uniform_(self.lang_to_goal_proj[-1].weight, gain=0.1)
+        nn.init.zeros_(self.lang_to_goal_proj[-1].bias)
 
     @torch.no_grad()
     def update_target_network(self) -> None:
@@ -551,6 +562,56 @@ class LanguageConditionedFBWorldModel(nn.Module):
         
         return loss
 
+    def compute_lang_goal_alignment_loss(
+        self,
+        lang_embedding: Tensor,
+        goal_embedding: Tensor,
+        temperature: float = 0.07,
+    ) -> Tensor:
+        """
+        CLIP-style bidirectional contrastive loss between language and goal embeddings.
+        
+        This loss explicitly aligns language embeddings with goal embeddings:
+        - Paired (same sample): language and goal should be similar
+        - Unpaired (different samples): language and goal should be dissimilar
+        
+        Args:
+            lang_embedding: Language embedding from CLIP (B, language_dim)
+            goal_embedding: Goal embedding from Backward network (B, latent_dim)
+            temperature: Softmax temperature (lower = sharper distribution)
+            
+        Returns:
+            Bidirectional InfoNCE loss scalar
+        """
+        B = lang_embedding.shape[0]
+        device = lang_embedding.device
+        
+        # Project language to goal dimension
+        lang_proj = self.lang_to_goal_proj(lang_embedding)  # (B, latent_dim)
+        
+        # L2 normalize both for cosine similarity
+        lang_proj = F.normalize(lang_proj, dim=-1)
+        goal_norm = F.normalize(goal_embedding, dim=-1)
+        
+        # Compute similarity matrix: (B, B)
+        # sim[i,j] = cosine_similarity(lang_proj[i], goal_norm[j])
+        sim_matrix = torch.mm(lang_proj, goal_norm.t()) / temperature
+        
+        # Labels: diagonal is positive (paired samples)
+        labels = torch.arange(B, device=device)
+        
+        # Bidirectional InfoNCE:
+        # Language-to-Goal: for each language, find the matching goal
+        loss_l2g = F.cross_entropy(sim_matrix, labels)
+        
+        # Goal-to-Language: for each goal, find the matching language
+        loss_g2l = F.cross_entropy(sim_matrix.t(), labels)
+        
+        # Average both directions (symmetric loss like CLIP)
+        loss = (loss_l2g + loss_g2l) / 2
+        
+        return loss
+
     def compute_loss(
         self,
         current_state: Tensor,
@@ -559,9 +620,10 @@ class LanguageConditionedFBWorldModel(nn.Module):
         lang_embedding: Tensor,
         forward_weight: float = 1.0,
         backward_weight: float = 0.5,
+        lang_goal_weight: float = 0.1,
     ) -> Dict[str, Tensor]:
         """
-        Compute total FB loss.
+        Compute total FB loss with language-goal alignment.
         
         Args:
             current_state: State at time t
@@ -570,6 +632,7 @@ class LanguageConditionedFBWorldModel(nn.Module):
             lang_embedding: Language embedding
             forward_weight: Weight for forward loss
             backward_weight: Weight for backward (contrastive) loss
+            lang_goal_weight: Weight for language-goal alignment loss
             
         Returns:
             Dictionary with individual and total losses
@@ -590,12 +653,24 @@ class LanguageConditionedFBWorldModel(nn.Module):
         
         total_loss = forward_weight * forward_loss + backward_weight * backward_loss
         
-        return {
+        result = {
             "loss": total_loss,
             "forward_loss": forward_loss,
             "backward_loss": backward_loss,
             "z_norm": outputs["z_online"].norm(dim=-1).mean(),
         }
+        
+        # Language-Goal alignment loss (CLIP-style contrastive)
+        if lang_goal_weight > 0:
+            lang_goal_loss = self.compute_lang_goal_alignment_loss(
+                lang_embedding,
+                outputs["z_online"],  # Use online goal embeddings
+            )
+            total_loss = total_loss + lang_goal_weight * lang_goal_loss
+            result["lang_goal_loss"] = lang_goal_loss
+            result["loss"] = total_loss
+        
+        return result
 
     def get_goal_embedding(
         self,

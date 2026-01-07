@@ -68,3 +68,10 @@ __all__ = [
     "DistributedTrainingContext",
 ]
 
+
+# Alignment visualizations
+from .visualizations import AlignmentVisualizer
+
+__all__ += [
+    "AlignmentVisualizer",
+]

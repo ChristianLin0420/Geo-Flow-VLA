@@ -56,6 +56,7 @@ from ..utils.distributed import (
     set_epoch_sampler,
     reduce_dict,
 )
+from ..utils.visualizations import AlignmentVisualizer
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -117,6 +118,9 @@ class WorldModelTrainer:
         self.ckpt_dir = Path(cfg.checkpoint.dir) / "phase1"
         if self.is_main:
             self.ckpt_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Alignment visualizer
+        self.visualizer = AlignmentVisualizer(cfg.logging)
 
     @property
     def world_model_module(self):
@@ -312,6 +316,7 @@ class WorldModelTrainer:
             "loss": 0.0,
             "forward_loss": 0.0,
             "backward_loss": 0.0,
+            "lang_goal_loss": 0.0,  # Language-goal alignment loss
         }
         num_batches = 0
         
@@ -366,6 +371,7 @@ class WorldModelTrainer:
                             lang_embedding,
                             forward_weight=self.cfg.training.phase1.forward_weight,
                             backward_weight=self.cfg.training.phase1.backward_weight,
+                            lang_goal_weight=self.cfg.training.phase1.get("lang_goal_weight", 0.1),
                         )
                     else:
                         # Legacy FB objective
@@ -397,6 +403,7 @@ class WorldModelTrainer:
                         lang_embedding,
                         forward_weight=self.cfg.training.phase1.forward_weight,
                         backward_weight=self.cfg.training.phase1.backward_weight,
+                        lang_goal_weight=self.cfg.training.phase1.get("lang_goal_weight", 0.1),
                     )
                 else:
                     # Legacy FB objective
@@ -429,7 +436,7 @@ class WorldModelTrainer:
             
             # Log to wandb (only on main process)
             if self.is_main and self.global_step % self.cfg.logging.log_every == 0:
-                wandb.log({
+                log_dict = {
                     "phase1/loss_total": loss_dict["loss"].item(),
                     "phase1/loss_forward": loss_dict["forward_loss"].item(),
                     "phase1/loss_backward": loss_dict["backward_loss"].item(),
@@ -437,16 +444,23 @@ class WorldModelTrainer:
                     "phase1/grad_norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm,
                     "phase1/lr": self.scheduler.get_last_lr()[0],
                     "phase1/step": self.global_step,
-                }, step=self.global_step)
+                }
+                # Log lang_goal_loss if present (language-goal alignment)
+                if "lang_goal_loss" in loss_dict:
+                    log_dict["phase1/loss_lang_goal"] = loss_dict["lang_goal_loss"].item()
+                wandb.log(log_dict, step=self.global_step)
             
             self.global_step += 1
             
             # Update progress bar
-            pbar.set_postfix({
+            postfix = {
                 "loss": f"{loss_dict['loss'].item():.4f}",
                 "fwd": f"{loss_dict['forward_loss'].item():.4f}",
                 "bwd": f"{loss_dict['backward_loss'].item():.4f}",
-            })
+            }
+            if "lang_goal_loss" in loss_dict:
+                postfix["lg"] = f"{loss_dict['lang_goal_loss'].item():.4f}"
+            pbar.set_postfix(postfix)
         
         # Average losses
         for key in epoch_losses:
@@ -463,6 +477,7 @@ class WorldModelTrainer:
             "loss": 0.0,
             "forward_loss": 0.0,
             "backward_loss": 0.0,
+            "lang_goal_loss": 0.0,  # Language-goal alignment loss
         }
         num_batches = 0
         
@@ -507,6 +522,7 @@ class WorldModelTrainer:
                     lang_embedding,
                     forward_weight=self.cfg.training.phase1.forward_weight,
                     backward_weight=self.cfg.training.phase1.backward_weight,
+                    lang_goal_weight=self.cfg.training.phase1.get("lang_goal_weight", 0.1),
                 )
                 
                 # Collect embeddings for visualization (with language)
@@ -551,8 +567,25 @@ class WorldModelTrainer:
             # Log forward prediction error heatmap
             if last_current_state is not None:
                 self._log_forward_prediction_error(
-                    last_current_state, last_future_state, last_actions
+                    last_current_state, last_future_state, last_actions,
+                    lang_embedding=last_lang_embedding if self.use_language else None
                 )
+            
+            # Log alignment visualizations
+            self.visualizer.log_all_visualizations(
+                epoch=self.epoch,
+                step=self.global_step,
+                z_online=all_z[:64] if len(all_z) > 0 else None,
+                z_target=all_z[:64] if len(all_z) > 0 else None,  # Using same for target approximation
+                language_embeddings=last_lang_embedding if self.use_language else None,
+                goal_embeddings=all_z[:64] if len(all_z) > 0 else None,
+                states=last_current_state,
+                forward_net=self.world_model_module.forward_net,
+                current_state=last_current_state,
+                actions=last_actions,
+                goal=all_z[:last_current_state.shape[0]] if last_current_state is not None and len(all_z) > 0 else None,
+                temperature=self.cfg.model.fb.get("temperature", 0.1),
+            )
         
         return val_losses
 
@@ -656,14 +689,18 @@ class WorldModelTrainer:
         current_states: torch.Tensor,
         future_states: torch.Tensor,
         actions: torch.Tensor,
+        lang_embedding: Optional[torch.Tensor] = None,
     ) -> None:
         """Log forward prediction error heatmap."""
         try:
             import matplotlib.pyplot as plt
             
             with torch.no_grad():
-                # Get goal embedding from future states
-                z = self.world_model_module.encode_goal(future_states)
+                # Get goal embedding from future states (with language if available)
+                if self.use_language and lang_embedding is not None:
+                    z = self.world_model_module.encode_goal(future_states, lang_embedding)
+                else:
+                    z = self.world_model_module.encode_goal(future_states)
                 
                 # Predict future states
                 pred_states = self.world_model_module.predict_future(
@@ -723,7 +760,18 @@ class WorldModelTrainer:
         """Load checkpoint."""
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         
-        self.world_model_module.load_state_dict(checkpoint["world_model_state_dict"])
+        # Use strict=False to handle architecture changes (e.g., frozen encoder keys)
+        missing, unexpected = self.world_model_module.load_state_dict(
+            checkpoint["world_model_state_dict"], 
+            strict=False
+        )
+        if missing:
+            logger.warning(f"Missing keys when loading checkpoint: {len(missing)} keys")
+            logger.debug(f"Missing keys: {missing[:10]}...")
+        if unexpected:
+            logger.warning(f"Unexpected keys when loading checkpoint: {len(unexpected)} keys")
+            logger.debug(f"Unexpected keys: {unexpected[:10]}...")
+        
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         self.epoch = checkpoint["epoch"]
@@ -755,12 +803,16 @@ class WorldModelTrainer:
                 # Only log and save on main process
                 if self.is_main:
                     # Log validation metrics
-                    wandb.log({
+                    val_log_dict = {
                         "phase1/val_loss_total": val_losses["loss"],
                         "phase1/val_loss_forward": val_losses["forward_loss"],
                         "phase1/val_loss_backward": val_losses["backward_loss"],
                         "phase1/epoch": epoch,
-                    }, step=self.global_step)
+                    }
+                    # Log lang_goal_loss if present
+                    if "lang_goal_loss" in val_losses:
+                        val_log_dict["phase1/val_loss_lang_goal"] = val_losses["lang_goal_loss"]
+                    wandb.log(val_log_dict, step=self.global_step)
                     
                     # Check for best model
                     is_best = val_losses["loss"] < self.best_loss

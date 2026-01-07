@@ -63,6 +63,9 @@ from ..utils.distributed import (
     set_epoch_sampler,
     reduce_dict,
 )
+from ..utils.visualizations import AlignmentVisualizer
+
+logging.basicConfig(level=logging.INFO)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -210,6 +213,9 @@ class PolicyTrainer:
             logger.info(f"✓ Early stopping enabled (patience={self.early_stopping.patience})")
         else:
             self.early_stopping = None
+        
+        # Alignment visualizer
+        self.visualizer = AlignmentVisualizer(cfg.logging)
 
     def _build_models(self) -> None:
         """Initialize all models with language conditioning support."""
@@ -1122,8 +1128,23 @@ class PolicyTrainer:
         """Load checkpoint."""
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         
-        self.policy_module.load_state_dict(checkpoint["policy_state_dict"])
-        self.discriminator_module.load_state_dict(checkpoint["discriminator_state_dict"])
+        # Use strict=False to handle architecture changes
+        missing, unexpected = self.policy_module.load_state_dict(
+            checkpoint["policy_state_dict"], strict=False
+        )
+        if missing:
+            logger.warning(f"Policy: Missing {len(missing)} keys")
+        if unexpected:
+            logger.warning(f"Policy: Unexpected {len(unexpected)} keys")
+        
+        missing, unexpected = self.discriminator_module.load_state_dict(
+            checkpoint["discriminator_state_dict"], strict=False
+        )
+        if missing:
+            logger.warning(f"Discriminator: Missing {len(missing)} keys")
+        if unexpected:
+            logger.warning(f"Discriminator: Unexpected {len(unexpected)} keys")
+        
         self.policy_optimizer.load_state_dict(checkpoint["policy_optimizer_state_dict"])
         self.disc_optimizer.load_state_dict(checkpoint["disc_optimizer_state_dict"])
         self.policy_scheduler.load_state_dict(checkpoint["policy_scheduler_state_dict"])
@@ -1234,6 +1255,18 @@ class PolicyTrainer:
         
         # Log 2D trajectory overlay for easier visualization
         self._log_2d_trajectory_overlay(rgb, pred_actions, actions)
+        
+        # Log alignment visualizations
+        self.visualizer.log_all_visualizations(
+            epoch=self.epoch,
+            step=self.global_step,
+            goal_embeddings=goal,
+            states=current_state,
+            policy=self.policy_module,
+            ground_truth_actions=actions,
+            rgb=rgb,
+            temperature=self.cfg.model.fb.get("temperature", 0.1),
+        )
 
 
 def train_policy(cfg: DictConfig) -> None:
