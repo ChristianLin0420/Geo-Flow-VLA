@@ -763,7 +763,21 @@ class PolicyTrainer:
             
             current_state = self.encode_batch(current_rgb)
             future_state = self.encode_batch(future_rgb)
-            goal = self.get_goal_embedding(future_state)
+            
+            # Process language embedding if using language-conditioned model
+            lang_embedding = None
+            if self.use_language:
+                if isinstance(instruction, (list, tuple)):
+                    instructions = list(instruction)
+                elif hasattr(instruction, 'tolist'):
+                    instructions = instruction.tolist()
+                else:
+                    instructions = [str(instruction)] * current_state.shape[0]
+                
+                with torch.no_grad():
+                    lang_embedding = self.world_model.encode_instruction(instructions)
+            
+            goal = self.get_goal_embedding(future_state, lang_embedding)
             
             # CFM loss
             cfm_result = self.cfm_loss(self.policy, actions, current_state, goal)
@@ -1239,7 +1253,20 @@ class PolicyTrainer:
         
         current_state = self.encode_batch(current_rgb)
         future_state = self.encode_batch(future_rgb)
-        goal = self.get_goal_embedding(future_state)
+        
+        # Process language embedding if using language-conditioned model
+        lang_embedding = None
+        if self.use_language:
+            if isinstance(instruction, (list, tuple)):
+                instructions = list(instruction)[:4]  # Match the 4 samples
+            elif isinstance(instruction, str):
+                instructions = [instruction] * 4
+            else:
+                instructions = [str(instruction)] * 4
+            
+            lang_embedding = self.world_model.encode_instruction(instructions)
+        
+        goal = self.get_goal_embedding(future_state, lang_embedding)
         
         # Generate trajectories
         pred_actions = self.policy_module.sample(
